@@ -1149,7 +1149,7 @@ function AdminDash({employees:initEmp,onLogout,onEmpChange}){
               <h3 style={{margin:0,color:NAVY,fontSize:18,fontWeight:800}}>🕐 Sauvegardes automatiques</h3>
               <button onClick={()=>setShowBackupList(false)} style={{background:"#FFF5F5",border:"none",borderRadius:8,padding:"6px 12px",color:"#C53030",cursor:"pointer",fontWeight:700}}>✕</button>
             </div>
-            <p style={{color:"#718096",fontSize:13,marginBottom:"1rem"}}>Sauvegardes stockées dans Firebase — 60 derniers jours conservés.</p>
+            <p style={{color:"#718096",fontSize:13,marginBottom:"1rem"}}>Sauvegardes stockées dans Google Sheets — 60 derniers jours conservés.</p>
             {backupLoading?<div style={{textAlign:"center",padding:"2rem",color:"#718096"}}>Chargement…</div>:
             backupList.length===0?<div style={{textAlign:"center",padding:"2rem",color:"#A0AEC0"}}>Aucune sauvegarde trouvée.<br/><small>La première sera créée ce soir à 22h.</small></div>:(
               <div style={{display:"flex",flexDirection:"column",gap:8}}>
