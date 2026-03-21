@@ -92,12 +92,12 @@ function ct(id){return CONTRATS.find(c=>c.id===id)||{label:id||"",color:"#718096
 // IDs PERMANENTS — ne jamais modifier ces IDs
 // Ils correspondent exactement aux documents dans Firebase Firestore
 const INIT_EMP=[
-  {id:"emp_1774035340883",name:"Valentin Chanonat", pin:"1111",contractType:"cdi", entryDate:"2020-10-01",photo:""},
-  {id:"emp_1774035394447",name:"Alexia Da Silva",   pin:"2222",contractType:"cdi", entryDate:"",photo:""},
-  {id:"emp_1774035408617",name:"Julien Pierre",     pin:"3333",contractType:"cdi", entryDate:"",photo:""},
-  {id:"emp_1774035420115",name:"Charles Malesa",    pin:"4444",contractType:"cdi", entryDate:"",photo:""},
-  {id:"emp_1774035432347",name:"Sacha Bedu",        pin:"5555",contractType:"cdi", entryDate:"",photo:""},
-  {id:"emp_1774035448182",name:"Anthony Gatien",    pin:"6666",contractType:"cdi", entryDate:"",photo:""},
+  {id:"emp_1774035340883",name:"Valentin Chanonat", pin:"1111",contractType:"cdi", entryDate:"2020-10-01",photo:"",email:"",phone:""},
+  {id:"emp_1774035394447",name:"Alexia Da Silva",   pin:"2222",contractType:"cdi", entryDate:"",photo:"",email:"",phone:""},
+  {id:"emp_1774035408617",name:"Julien Pierre",     pin:"3333",contractType:"cdi", entryDate:"",photo:"",email:"",phone:""},
+  {id:"emp_1774035420115",name:"Charles Malesa",    pin:"4444",contractType:"cdi", entryDate:"",photo:"",email:"",phone:""},
+  {id:"emp_1774035432347",name:"Sacha Bedu",        pin:"5555",contractType:"cdi", entryDate:"",photo:"",email:"",phone:""},
+  {id:"emp_1774035448182",name:"Anthony Gatien",    pin:"6666",contractType:"cdi", entryDate:"",photo:"",email:"",phone:""},
 ];
 const ABS=[
   {id:"cp",   label:"Congés payés",        color:"#2F855A",bg:"#F0FFF4",icon:"🏖"},
@@ -117,6 +117,18 @@ function fmtYM(ym){const[y,m]=ym.split("-");return`${MONTHS_FR[parseInt(m)-1]} $
 function today(){const d=new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;}
 function fmtDate(s){if(!s)return"";const[y,m,d]=s.split("-");const dt=new Date(Number(y),Number(m)-1,Number(d));return`${DAYS_FR[dt.getDay()]} ${d}/${m}/${y}`;}
 function monthRange(back=5){const now=new Date(),arr=[];for(let i=back;i>=0;i--){const d=new Date(now.getFullYear(),now.getMonth()-i,1);arr.push(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`);}return arr;}
+// Tous les mois depuis mars 2026 jusqu'au mois courant
+function monthsSinceStart(){
+  const start=new Date(2026,2,1); // mars 2026
+  const now=new Date();
+  const arr=[];
+  let d=new Date(start);
+  while(d<=now){
+    arr.push(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`);
+    d.setMonth(d.getMonth()+1);
+  }
+  return arr;
+}
 function initials(n){return n.split(" ").map(w=>w[0]).join("").slice(0,2).toUpperCase();}
 function daysBetween(d1,d2){return Math.round(Math.abs((new Date(d2||d1)-new Date(d1))/86400000))+1;}
 
@@ -262,9 +274,10 @@ function EmpLogin({employees,onLogin,onBack}){
         {step==="select"?(
           <div style={{display:"flex",flexDirection:"column",gap:10}}>
             <p style={{color:"#718096",fontSize:12,fontWeight:700,margin:"0 0 4px",letterSpacing:0.5}}>QUI ÊTES-VOUS ?</p>
-            {employees.map(emp=>(
+            {employees.filter(e=>!e.archived).map(emp=>(
               <button key={emp.id} onClick={()=>{setSel(emp);setPin("");setErr("");setStep("pin");}} style={{background:"#fff",border:"1.5px solid #E2E8F0",borderRadius:16,padding:"1rem 1.25rem",cursor:"pointer",textAlign:"left",display:"flex",alignItems:"center",gap:14}}>
-                <Avatar name={emp.name}/><span style={{fontWeight:700,fontSize:16,color:"#1A202C",flex:1}}>{emp.name}</span><span style={{color:"#CBD5E0",fontSize:20}}>›</span>
+                {emp.photo?<div style={{width:44,height:44,borderRadius:"50%",overflow:"hidden",flexShrink:0}}><img src={emp.photo} style={{width:"100%",height:"100%",objectFit:"cover"}}/></div>:<Avatar name={emp.name}/>}
+                <span style={{fontWeight:700,fontSize:16,color:"#1A202C",flex:1}}>{emp.name}</span><span style={{color:"#CBD5E0",fontSize:20}}>›</span>
               </button>
             ))}
           </div>
@@ -365,7 +378,78 @@ function AbsForm({initial,onSave,onCancel}){
 }
 
 // ── TABLEAU DE BORD SALARIÉ ───────────────────────────────────────────────────
-function EmpDash({employee,onLogout}){
+// ── PROFIL ÉDITABLE SALARIÉ (PIN + photo) ────────────────────────────────────
+function ProfileEdit({employee,onSave,onClose,onExport,ym}){
+  const[pin,setPin]=useState(employee.pin||"");
+  const[photo,setPhoto]=useState(employee.photo||"");
+  const[saving,setSaving]=useState(false);
+  const[err,setErr]=useState("");
+  const[saved,setSaved]=useState(false);
+
+  function handlePhoto(e){
+    const file=e.target.files[0];if(!file)return;
+    const reader=new FileReader();
+    reader.onload=ev=>{
+      const img=new Image();
+      img.onload=()=>{
+        const canvas=document.createElement("canvas");
+        const size=Math.min(img.width,img.height);
+        const sx=(img.width-size)/2,sy=(img.height-size)/2;
+        canvas.width=100;canvas.height=100;
+        canvas.getContext("2d").drawImage(img,sx,sy,size,size,0,0,100,100);
+        setPhoto(canvas.toDataURL("image/jpeg",0.5));
+        setSaved(false);
+      };
+      img.src=ev.target.result;
+    };
+    reader.readAsDataURL(file);
+  }
+
+  async function handleSave(){
+    if(!/^\d{4}$/.test(pin)){setErr("Le PIN doit faire exactement 4 chiffres.");return;}
+    setSaving(true);setErr("");
+    await onSave({pin,photo});
+    setSaving(false);setSaved(true);
+    setTimeout(()=>setSaved(false),2500);
+  }
+
+  return(
+    <Card style={{marginBottom:"1.25rem",border:`1.5px solid ${NAVY}20`}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"1rem"}}>
+        <div style={{fontWeight:800,fontSize:15,color:NAVY}}>👤 Mon profil</div>
+        <button onClick={onClose} style={{background:"none",border:"none",color:"#A0AEC0",fontSize:20,cursor:"pointer",lineHeight:1}}>×</button>
+      </div>
+      {/* Photo */}
+      <div style={{display:"flex",alignItems:"center",gap:16,marginBottom:"1rem"}}>
+        <div style={{position:"relative",flexShrink:0}}>
+          {photo
+            ?<div style={{width:72,height:72,borderRadius:"50%",overflow:"hidden",border:`3px solid ${NAVY}20`}}><img src={photo} style={{width:"100%",height:"100%",objectFit:"cover"}}/></div>
+            :<Avatar name={employee.name} size={72} bg={`${NAVY}15`} color={NAVY} fs={26}/>
+          }
+          <label style={{position:"absolute",bottom:0,right:0,width:24,height:24,background:MAG,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",border:"2px solid #fff"}}>
+            <span style={{color:"#fff",fontSize:12}}>✏</span>
+            <input type="file" accept="image/*" onChange={handlePhoto} style={{display:"none"}}/>
+          </label>
+        </div>
+        <div>
+          <div style={{fontWeight:800,fontSize:16,color:NAVY}}>{employee.name}</div>
+          {employee.contractType&&(()=>{const c=ct(employee.contractType);return<span style={{fontSize:12,background:c.bg,color:c.color,borderRadius:6,padding:"2px 10px",fontWeight:700,display:"inline-block",marginTop:4}}>{c.label}</span>;})()}
+          {employee.entryDate&&<div style={{fontSize:12,color:"#718096",marginTop:4}}>📅 Entrée : {fmtDate(employee.entryDate)}</div>}
+        </div>
+      </div>
+      {/* PIN */}
+      <Inp label="Nouveau code PIN (4 chiffres)" type="password" maxLength={4} value={pin} onChange={e=>{setPin(e.target.value);setErr("");setSaved(false);}} placeholder="••••" xstyle={{fontSize:24,textAlign:"center",letterSpacing:10,fontWeight:700}}/>
+      {err&&<div style={{background:"#FFF5F5",border:"1.5px solid #FEB2B2",borderRadius:10,padding:"0.6rem 1rem",color:"#C53030",fontSize:13,marginBottom:10,fontWeight:600}}>⚠️ {err}</div>}
+      {saved&&<div style={{background:"#F0FFF4",border:"1.5px solid #9AE6B4",borderRadius:10,padding:"0.6rem 1rem",color:"#276749",fontSize:13,marginBottom:10,fontWeight:600}}>✅ Profil mis à jour !</div>}
+      <Btn onClick={handleSave} disabled={saving}>{saving?"Sauvegarde…":"💾 Enregistrer"}</Btn>
+      <button onClick={onExport} style={{width:"100%",marginTop:10,background:`linear-gradient(135deg,${NAVY},${NAVYLT})`,color:"#fff",border:"none",borderRadius:12,padding:"11px",fontSize:13,fontWeight:700,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
+        📥 Exporter mes heures — {fmtYM(ym)}
+      </button>
+    </Card>
+  );
+}
+
+function EmpDash({employee,employees,onLogout,onEmpUpdate}){
   const[entries,setEntries]=useState([]);
   const[loading,setLoading]=useState(true);
   const[saving,setSaving]=useState(false);
@@ -374,7 +458,7 @@ function EmpDash({employee,onLogout}){
   const[editEntry,setEditEntry]=useState(null);
   const[filter,setFilter]=useState("all");
   const[showProfile,setShowProfile]=useState(false);
-  const months=monthRange(2);
+  const months=monthsSinceStart();
   const key=`fp:${employee.id}:${ym}`;
 
   // ── Export Excel personnel (6 derniers mois) ──────────────────────────────
@@ -385,7 +469,7 @@ function EmpDash({employee,onLogout}){
     function fmtHL(h){const hh=Math.floor(Math.abs(h)),mm=Math.round((Math.abs(h)-hh)*60);return`${h<0?"-":""}${hh}h${String(mm).padStart(2,"0")}`;}
 
     // Charger les 6 derniers mois depuis Firebase
-    Promise.all(monthRange(5).map(m=>sg(`fp:${employee.id}:${m}`).then(d=>d||[]))).then(results=>{
+    Promise.all(monthsSinceStart().map(m=>sg(`fp:${employee.id}:${m}`).then(d=>d||[]))).then(results=>{
       const all=results.flat();
       if(!all.length){alert("Aucune donnée à exporter.");return;}
 
@@ -490,22 +574,11 @@ function EmpDash({employee,onLogout}){
       <div style={{padding:"0 1.25rem",maxWidth:460,margin:"0 auto"}}>
         {/* Carte profil */}
         {showProfile&&(
-          <Card style={{marginBottom:"1.25rem",border:`1.5px solid ${NAVY}20`}}>
-            <div style={{display:"flex",gap:16,alignItems:"center",marginBottom:"1rem"}}>
-              {employee.photo
-                ?<div style={{width:72,height:72,borderRadius:"50%",overflow:"hidden",flexShrink:0,border:`3px solid ${NAVY}20`}}><img src={employee.photo} style={{width:"100%",height:"100%",objectFit:"cover"}}/></div>
-                :<Avatar name={employee.name} size={72} bg={`${NAVY}15`} color={NAVY} fs={26}/>
-              }
-              <div>
-                <div style={{fontWeight:800,fontSize:17,color:NAVY}}>{employee.name}</div>
-                {employee.contractType&&(()=>{const c=ct(employee.contractType);return<span style={{fontSize:12,background:c.bg,color:c.color,borderRadius:6,padding:"2px 10px",fontWeight:700,display:"inline-block",marginTop:4}}>{c.label}</span>;})()}
-                {employee.entryDate&&<div style={{fontSize:12,color:"#718096",marginTop:4}}>📅 Entrée : <strong>{fmtDate(employee.entryDate)}</strong></div>}
-              </div>
-            </div>
-            <button onClick={exportMyXLSX} style={{width:"100%",background:`linear-gradient(135deg,${NAVY},${NAVYLT})`,color:"#fff",border:"none",borderRadius:12,padding:"11px",fontSize:13,fontWeight:700,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
-              📥 Exporter mes heures — {fmtYM(ym)}
-            </button>
-          </Card>
+          <ProfileEdit employee={employee} onSave={async(updates)=>{
+            const next=employees.map(e=>e.id===employee.id?{...e,...updates}:e);
+            await ss("fp:employees",next);
+            onEmpUpdate({...employee,...updates});
+          }} onClose={()=>setShowProfile(false)} onExport={exportMyXLSX} ym={ym}/>
         )}
 
         <Card style={{marginTop:"-2rem",marginBottom:"1.25rem"}}>
@@ -526,7 +599,7 @@ function EmpDash({employee,onLogout}){
 
         {/* Indicateur sauvegarde */}
         {saving&&<div style={{background:`${NAVY}10`,border:`1px solid ${NAVY}20`,borderRadius:10,padding:"8px 14px",marginBottom:12,display:"flex",alignItems:"center",gap:8,fontSize:13,color:NAVY,fontWeight:600}}>
-          <div style={{width:14,height:14,border:`2px solid ${NAVY}30`,borderTop:`2px solid ${NAVY}`,borderRadius:"50%",animation:"spin 0.8s linear infinite",flexShrink:0}}/> Synchronisation Firebase…
+          <div style={{width:14,height:14,border:`2px solid ${NAVY}30`,borderTop:`2px solid ${NAVY}`,borderRadius:"50%",animation:"spin 0.8s linear infinite",flexShrink:0}}/> Synchronisation en cours…
           <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
         </div>}
 
@@ -635,7 +708,7 @@ function AdminLogin({onLogin,onBack}){
 // ── GESTION SALARIÉS ──────────────────────────────────────────────────────────
 function EmpManager({employees,onUpdate}){
   const COLS=["#1E3A7B","#E8457A","#2F855A","#B7791F","#6B46C1","#C53030","#2B6CB0","#276749"];
-  const emptyForm={name:"",pin:"",contractType:"cdi",entryDate:"",photo:""};
+  const emptyForm={name:"",pin:"",contractType:"cdi",entryDate:"",photo:"",email:"",phone:""};
   // IDs stables: préfixe fixe + timestamp à la création uniquement
   const[form,setForm]=useState(emptyForm);
   const[editId,setEditId]=useState(null);
@@ -677,7 +750,7 @@ function EmpManager({employees,onUpdate}){
     const e=validate();if(e){setErr(e);return;}
     setSaving(true);
     let next;
-    const data={name:form.name.trim(),pin:form.pin,contractType:form.contractType,entryDate:form.entryDate,photo:form.photo};
+    const data={name:form.name.trim(),pin:form.pin,contractType:form.contractType,entryDate:form.entryDate,photo:form.photo,email:form.email||'',phone:form.phone||''};
     // ID stable généré une seule fois à la création
     if(editId){next=employees.map(emp=>emp.id===editId?{...emp,...data}:emp);showToast("✓ Modifié et synchronisé");}
     else{next=[...employees,{id:`emp_${Date.now()}`,...data}];showToast("✓ Ajouté et synchronisé");}
@@ -686,7 +759,7 @@ function EmpManager({employees,onUpdate}){
   }
   async function delEmp(id){
     // Vérifier si ce salarié a des données avant de supprimer
-    const months=monthRange(11);
+    const months=monthsSinceStart();
     let hasData=false;
     for(const m of months){
       const d=await sg(`fp:${id}:${m}`);
@@ -757,6 +830,11 @@ function EmpManager({employees,onUpdate}){
           </div>
           <Inp label="Date d'entrée" type="date" value={form.entryDate} onChange={e=>setF("entryDate")(e.target.value)}/>
         </div>
+        {/* Email + Téléphone */}
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+          <Inp label="Adresse email" type="email" value={form.email||""} onChange={e=>{setF("email")(e.target.value);}} placeholder="prenom@exemple.fr"/>
+          <Inp label="Téléphone portable" type="tel" value={form.phone||""} onChange={e=>{setF("phone")(e.target.value);}} placeholder="06 12 34 56 78"/>
+        </div>
 
         {err&&<div style={{background:"#FFF5F5",border:"1.5px solid #FEB2B2",borderRadius:10,padding:"0.7rem 1rem",color:"#C53030",fontSize:13,marginBottom:14,fontWeight:600}}>⚠️ {err}</div>}
         <div style={{display:"grid",gridTemplateColumns:editId?"1fr 1fr":"1fr",gap:10}}>
@@ -765,36 +843,195 @@ function EmpManager({employees,onUpdate}){
         </div>
       </Card>
 
-      {/* Liste salariés */}
-      <Card style={{padding:0,overflow:"hidden"}}>
-        <div style={{padding:"1rem 1.5rem",borderBottom:"1px solid #EDF2F7",display:"flex",justifyContent:"space-between",alignItems:"center"}}><span style={{fontWeight:800,color:NAVY,fontSize:15}}>Base salariée</span><Badge color={NAVY}>{employees.length} salarié{employees.length>1?"s":""}</Badge></div>
-        {employees.length===0
-          ?<div style={{textAlign:"center",padding:"3rem",color:"#A0AEC0"}}><div style={{fontSize:40}}>👥</div><p>Aucun salarié</p></div>
-          :employees.map((emp,i)=>{
-            const bg=COLS[i%COLS.length];const isE=editId===emp.id;const contrat=ct(emp.contractType);
-            return(
-              <div key={emp.id} style={{padding:"0.9rem 1.5rem",borderBottom:i<employees.length-1?"1px solid #EDF2F7":"none",display:"flex",alignItems:"center",gap:14,background:isE?`${MAG}06`:"transparent",borderLeft:isE?`3px solid ${MAG}`:"3px solid transparent"}}>
-                {/* Photo ou initiales */}
-                {emp.photo
-                  ?<div style={{width:44,height:44,borderRadius:"50%",overflow:"hidden",flexShrink:0,border:`2px solid ${bg}30`}}><img src={emp.photo} style={{width:"100%",height:"100%",objectFit:"cover"}}/></div>
-                  :<Avatar name={emp.name} size={44} bg={`${bg}18`} color={bg}/>
-                }
-                <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontWeight:700,color:"#1A202C",fontSize:15}}>{emp.name}</div>
-                  <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:3}}>
-                    {emp.contractType&&<span style={{fontSize:11,background:contrat.bg,color:contrat.color,borderRadius:5,padding:"1px 8px",fontWeight:700}}>{contrat.label}</span>}
-                    {emp.entryDate&&<span style={{fontSize:11,background:"#EDF2F7",color:"#4A5568",borderRadius:5,padding:"1px 8px",fontWeight:600}}>📅 {fmtDate(emp.entryDate)}</span>}
-                    <span style={{fontSize:11,background:"#EDF2F7",color:"#4A5568",borderRadius:5,padding:"1px 8px",fontWeight:700,letterSpacing:2}}>PIN ••••</span>
-                  </div>
-                </div>
-                <div style={{display:"flex",gap:8}}>
-                  <button onClick={()=>{setEditId(emp.id);setForm({name:emp.name,pin:emp.pin,contractType:emp.contractType||"cdi",entryDate:emp.entryDate||"",photo:emp.photo||""});setErr("");}} style={{background:isE?`${MAG}15`:`${NAVY}10`,border:"none",borderRadius:9,padding:"6px 12px",fontSize:12,color:isE?MAG:NAVY,cursor:"pointer",fontWeight:700}}>✏</button>
-                  <button onClick={()=>setConfirmDel(emp.id)} style={{background:"#FFF5F5",border:"none",borderRadius:9,padding:"6px 10px",fontSize:12,color:"#C53030",cursor:"pointer"}}>🗑</button>
-                </div>
-              </div>
-            );
-          })
+      {/* Liste salariés avec onglets actifs / archivés */}
+      {(()=>{
+        const[showArchived,setShowArchived]=React.useState(false);
+        const active=employees.filter(e=>!e.archived);
+        const archived=employees.filter(e=>e.archived);
+        const list=showArchived?archived:active;
+
+        async function toggleArchive(id){
+          const emp=employees.find(e=>e.id===id);
+          const label=emp.archived?"Réactiver":"Archiver";
+          if(!window.confirm(`${label} ${emp.name} ?${!emp.archived?"\n\nIl/elle n'apparaîtra plus sur la page de connexion.":""}`))return;
+          const next=employees.map(e=>e.id===id?{...e,archived:!e.archived}:e);
+          await ss("fp:employees",next);
+          onUpdate(next);
+          showToast(emp.archived?"✓ Salarié réactivé":"✓ Salarié archivé");
         }
+
+        return(
+          <Card style={{padding:0,overflow:"hidden"}}>
+            <div style={{padding:"1rem 1.5rem",borderBottom:"1px solid #EDF2F7",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
+              <span style={{fontWeight:800,color:NAVY,fontSize:15}}>Base salariée</span>
+              <div style={{display:"flex",gap:6}}>
+                <button onClick={()=>setShowArchived(false)} style={{background:!showArchived?NAVY:"transparent",color:!showArchived?"#fff":"#718096",border:`1.5px solid ${!showArchived?NAVY:"#E2E8F0"}`,borderRadius:8,padding:"4px 12px",fontSize:12,fontWeight:700,cursor:"pointer"}}>
+                  Actifs ({active.length})
+                </button>
+                <button onClick={()=>setShowArchived(true)} style={{background:showArchived?"#718096":"transparent",color:showArchived?"#fff":"#718096",border:`1.5px solid ${showArchived?"#718096":"#E2E8F0"}`,borderRadius:8,padding:"4px 12px",fontSize:12,fontWeight:700,cursor:"pointer"}}>
+                  Archivés ({archived.length})
+                </button>
+              </div>
+            </div>
+            {list.length===0
+              ?<div style={{textAlign:"center",padding:"2rem",color:"#A0AEC0"}}><div style={{fontSize:36}}>{showArchived?"📦":"👥"}</div><p style={{margin:"0.5rem 0 0",fontSize:13}}>{showArchived?"Aucun salarié archivé":"Aucun salarié actif"}</p></div>
+              :list.map((emp,i)=>{
+                const bg=COLS[i%COLS.length];const isE=editId===emp.id;const contrat=ct(emp.contractType);
+                return(
+                  <div key={emp.id} style={{padding:"0.9rem 1.5rem",borderBottom:i<list.length-1?"1px solid #EDF2F7":"none",display:"flex",alignItems:"center",gap:14,background:isE?`${MAG}06`:emp.archived?"#FAFAFA":"transparent",borderLeft:isE?`3px solid ${MAG}`:emp.archived?"3px solid #E2E8F0":"3px solid transparent",opacity:emp.archived?0.7:1}}>
+                    {emp.photo
+                      ?<div style={{width:44,height:44,borderRadius:"50%",overflow:"hidden",flexShrink:0,border:`2px solid ${bg}30`,filter:emp.archived?"grayscale(1)":"none"}}><img src={emp.photo} style={{width:"100%",height:"100%",objectFit:"cover"}}/></div>
+                      :<Avatar name={emp.name} size={44} bg={`${bg}18`} color={bg}/>
+                    }
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontWeight:700,color:emp.archived?"#718096":"#1A202C",fontSize:15}}>{emp.name}{emp.archived&&<span style={{fontSize:10,background:"#EDF2F7",color:"#718096",borderRadius:4,padding:"1px 6px",marginLeft:6,fontWeight:700}}>ARCHIVÉ</span>}</div>
+                      <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:3}}>
+                        {emp.contractType&&<span style={{fontSize:11,background:contrat.bg,color:contrat.color,borderRadius:5,padding:"1px 8px",fontWeight:700}}>{contrat.label}</span>}
+                        {emp.entryDate&&<span style={{fontSize:11,background:"#EDF2F7",color:"#4A5568",borderRadius:5,padding:"1px 8px",fontWeight:600}}>📅 {fmtDate(emp.entryDate)}</span>}
+                        {emp.email&&<span style={{fontSize:11,background:"#EBF8FF",color:"#2B6CB0",borderRadius:5,padding:"1px 8px",fontWeight:600}}>✉ {emp.email}</span>}
+                        {emp.phone&&<span style={{fontSize:11,background:"#F0FFF4",color:"#276749",borderRadius:5,padding:"1px 8px",fontWeight:600}}>📱 {emp.phone}</span>}
+                        <span style={{fontSize:11,background:"#EDF2F7",color:"#4A5568",borderRadius:5,padding:"1px 8px",fontWeight:700,letterSpacing:2}}>PIN ••••</span>
+                      </div>
+                    </div>
+                    <div style={{display:"flex",gap:6}}>
+                      {!emp.archived&&<button onClick={()=>{setEditId(emp.id);setForm({name:emp.name,pin:emp.pin,contractType:emp.contractType||"cdi",entryDate:emp.entryDate||"",photo:emp.photo||"",email:emp.email||"",phone:emp.phone||""});setErr("");}} style={{background:isE?`${MAG}15`:`${NAVY}10`,border:"none",borderRadius:9,padding:"6px 12px",fontSize:12,color:isE?MAG:NAVY,cursor:"pointer",fontWeight:700}}>✏</button>}
+                      <button onClick={()=>toggleArchive(emp.id)} title={emp.archived?"Réactiver":"Archiver"} style={{background:emp.archived?"#F0FFF4":"#FFFAF0",border:"none",borderRadius:9,padding:"6px 10px",fontSize:13,cursor:"pointer"}}>
+                        {emp.archived?"♻️":"📦"}
+                      </button>
+                      <button onClick={()=>setConfirmDel(emp.id)} style={{background:"#FFF5F5",border:"none",borderRadius:9,padding:"6px 10px",fontSize:12,color:"#C53030",cursor:"pointer"}}>🗑</button>
+                    </div>
+                  </div>
+                );
+              })
+            }
+          </Card>
+        );
+      })()}
+    </div>
+  );
+}
+
+// ── PANEL MESSAGES (SMS + Email via SpotHit) ──────────────────────────────────
+function MessagesPanel({employees}){
+  const actifs=employees.filter(e=>!e.archived);
+  const[channel,setChannel]=useState("sms"); // "sms" | "email"
+  const[selected,setSelected]=useState([]);
+  const[message,setMessage]=useState("");
+  const[subject,setSubject]=useState("");
+  const[sending,setSending]=useState(false);
+  const[result,setResult]=useState(null); // {ok,sent,errors}
+
+  function toggleAll(){
+    const eligible=actifs.filter(e=>channel==="sms"?e.phone:e.email);
+    if(selected.length===eligible.length)setSelected([]);
+    else setSelected(eligible.map(e=>e.id));
+  }
+  function toggleEmp(id){setSelected(s=>s.includes(id)?s.filter(x=>x!==id):[...s,id]);}
+
+  const eligible=actifs.filter(e=>channel==="sms"?e.phone:e.email);
+  const missing=actifs.filter(e=>channel==="sms"?!e.phone:!e.email);
+
+  async function handleSend(){
+    if(!selected.length){alert("Sélectionnez au moins un destinataire.");return;}
+    if(!message.trim()){alert("Écrivez un message.");return;}
+    if(channel==="email"&&!subject.trim()){alert("Ajoutez un objet.");return;}
+    setSending(true);setResult(null);
+    try{
+      const recipients=selected.map(id=>{
+        const emp=actifs.find(e=>e.id===id);
+        return{name:emp.name,value:channel==="sms"?emp.phone:emp.email};
+      });
+      const url=`${SCRIPT_URL}?secret=${SECRET}&action=send_message`;
+      const r=await fetch(SCRIPT_URL,{
+        method:"POST",
+        headers:{"Content-Type":"text/plain"},
+        body:JSON.stringify({secret:SECRET,action:"send_message",channel,recipients,message:message.trim(),subject:subject.trim()}),
+        redirect:"follow"
+      });
+      const j=await r.json();
+      setResult(j);
+      if(j.ok){setMessage("");setSubject("");setSelected([]);}
+    }catch(e){setResult({ok:false,error:e.message});}
+    setSending(false);
+  }
+
+  return(
+    <div style={{maxWidth:700,margin:"0 auto"}}>
+      {/* Choix du canal */}
+      <Card style={{marginBottom:"1.25rem"}}>
+        <div style={{fontWeight:800,color:NAVY,fontSize:15,marginBottom:"1rem"}}>💬 Envoyer un message</div>
+        <div style={{display:"flex",gap:10,marginBottom:"1.25rem"}}>
+          {[{id:"sms",icon:"📱",label:"SMS"},{id:"email",icon:"✉️",label:"Email"}].map(c=>(
+            <button key={c.id} onClick={()=>{setChannel(c.id);setSelected([]);setResult(null);}}
+              style={{flex:1,padding:"0.75rem",borderRadius:12,border:`2px solid ${channel===c.id?NAVY:"#E2E8F0"}`,background:channel===c.id?`${NAVY}08`:"#fff",fontWeight:700,fontSize:14,cursor:"pointer",color:channel===c.id?NAVY:"#718096",display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
+              <span>{c.icon}</span>{c.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Destinataires */}
+        <div style={{marginBottom:"1.25rem"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+            <label style={{fontSize:11,fontWeight:700,color:"#4A5568",letterSpacing:0.5,textTransform:"uppercase"}}>Destinataires</label>
+            {eligible.length>0&&<button onClick={toggleAll} style={{background:"none",border:"none",color:NAVY,fontSize:12,fontWeight:700,cursor:"pointer"}}>
+              {selected.length===eligible.length?"Tout désélectionner":"Tout sélectionner"}
+            </button>}
+          </div>
+          {eligible.length===0?(
+            <div style={{background:"#FFF5F5",border:"1.5px solid #FEB2B2",borderRadius:10,padding:"0.75rem 1rem",color:"#C53030",fontSize:13,fontWeight:600}}>
+              ⚠️ Aucun salarié n'a de {channel==="sms"?"numéro de téléphone":"adresse email"} renseigné.
+            </div>
+          ):(
+            <div style={{display:"flex",flexDirection:"column",gap:6}}>
+              {eligible.map(emp=>(
+                <label key={emp.id} style={{display:"flex",alignItems:"center",gap:12,padding:"0.65rem 1rem",background:selected.includes(emp.id)?`${NAVY}08`:"#F7F9FC",borderRadius:10,border:`1.5px solid ${selected.includes(emp.id)?NAVY+"30":"transparent"}`,cursor:"pointer"}}>
+                  <input type="checkbox" checked={selected.includes(emp.id)} onChange={()=>toggleEmp(emp.id)} style={{width:16,height:16,accentColor:NAVY}}/>
+                  {emp.photo?<div style={{width:32,height:32,borderRadius:"50%",overflow:"hidden",flexShrink:0}}><img src={emp.photo} style={{width:"100%",height:"100%",objectFit:"cover"}}/></div>:<Avatar name={emp.name} size={32} fs={11}/>}
+                  <div style={{flex:1}}>
+                    <div style={{fontWeight:700,fontSize:13,color:NAVY}}>{emp.name}</div>
+                    <div style={{fontSize:11,color:"#718096"}}>{channel==="sms"?emp.phone:emp.email}</div>
+                  </div>
+                </label>
+              ))}
+            </div>
+          )}
+          {missing.length>0&&(
+            <div style={{marginTop:8,fontSize:11,color:"#A0AEC0"}}>
+              Sans {channel==="sms"?"téléphone":"email"} : {missing.map(e=>e.name).join(", ")}
+            </div>
+          )}
+        </div>
+
+        {/* Objet (email uniquement) */}
+        {channel==="email"&&(
+          <Inp label="Objet" value={subject} onChange={e=>setSubject(e.target.value)} placeholder="Ex: Planning semaine du 24 mars"/>
+        )}
+
+        {/* Message */}
+        <div style={{marginBottom:14}}>
+          <div style={{display:"flex",justifyContent:"space-between",marginBottom:5}}>
+            <label style={{fontSize:11,fontWeight:700,color:"#4A5568",letterSpacing:0.5,textTransform:"uppercase"}}>Message</label>
+            {channel==="sms"&&<span style={{fontSize:11,color:message.length>160?"#C53030":"#A0AEC0",fontWeight:600}}>{message.length}/160</span>}
+          </div>
+          <textarea value={message} onChange={e=>setMessage(e.target.value)}
+            placeholder={channel==="sms"?"Votre SMS (160 caractères max)…":"Contenu de l'email…"}
+            style={{width:"100%",padding:"0.75rem 1rem",borderRadius:10,border:"1.5px solid #E2E8F0",fontSize:14,outline:"none",resize:"vertical",minHeight:channel==="email"?120:80,boxSizing:"border-box",fontFamily:"inherit",color:"#1A202C"}}/>
+        </div>
+
+        {/* Résultat */}
+        {result&&(
+          <div style={{background:result.ok?"#F0FFF4":"#FFF5F5",border:`1.5px solid ${result.ok?"#9AE6B4":"#FEB2B2"}`,borderRadius:10,padding:"0.75rem 1rem",fontSize:13,fontWeight:600,color:result.ok?"#276749":"#C53030",marginBottom:14}}>
+            {result.ok?`✅ ${result.sent} message(s) envoyé(s) avec succès !`:`❌ Erreur : ${result.error||"Envoi échoué"}`}
+          </div>
+        )}
+
+        <Btn onClick={handleSend} disabled={sending||!selected.length||!message.trim()||eligible.length===0}>
+          {sending?"Envoi en cours…":`${channel==="sms"?"📱 Envoyer SMS":"✉️ Envoyer Email"} — ${selected.length} destinataire${selected.length>1?"s":""}`}
+        </Btn>
+
+        <div style={{marginTop:12,fontSize:11,color:"#A0AEC0",textAlign:"center"}}>
+          Envoi via <strong>SpotHit</strong> · Configurez votre clé API dans Apps Script
+        </div>
       </Card>
     </div>
   );
@@ -809,7 +1046,7 @@ function AdminDash({employees:initEmp,onLogout,onEmpChange}){
   const[loading,setLoading]=useState(false);
   const[detailId,setDetailId]=useState(null);
   const[detailTab,setDetailTab]=useState("all");
-  const months=monthRange(5);
+  const months=monthsSinceStart();
 
   function handleUpdate(next){setEmployees(next);onEmpChange(next);}
 
@@ -868,7 +1105,7 @@ function AdminDash({employees:initEmp,onLogout,onEmpChange}){
   async function backupAll(silent=false){
     const backup={version:1,date:new Date().toISOString(),employees,heures:{}};
     // Charger toutes les heures des 12 derniers mois pour chaque salarié
-    const months=monthRange(11);
+    const months=monthsSinceStart();
     for(const emp of employees){
       backup.heures[emp.id]={};
       for(const m of months){
@@ -1137,7 +1374,7 @@ function AdminDash({employees:initEmp,onLogout,onEmpChange}){
   const dH=detailId?eTotH(detailId):0;
   const dAbsDays=detailId?eTotAbs(detailId):0;
   const dShown=detailTab==="work"?dWork:detailTab==="absence"?dAbs:dAll;
-  const TABS=[{id:"heures",icon:"📊",label:"Heures & Absences"},{id:"salaries",icon:"👥",label:"Salariés"}];
+  const TABS=[{id:"heures",icon:"📊",label:"Heures & Absences"},{id:"salaries",icon:"👥",label:"Salariés"},{id:"messages",icon:"💬",label:"Messages"}];
 
   return(
     <div style={{minHeight:"100vh",background:"#F4F6FA"}}>
@@ -1235,7 +1472,8 @@ function AdminDash({employees:initEmp,onLogout,onEmpChange}){
       </div>
 
       <div style={{padding:"1.5rem",maxWidth:900,margin:"0 auto"}}>
-        {tab==="salaries"?<EmpManager employees={employees} onUpdate={handleUpdate}/>:(
+        {tab==="salaries"?<EmpManager employees={employees} onUpdate={handleUpdate}/>:
+        tab==="messages"?<MessagesPanel employees={employees}/>:(
           <>
             <div style={{display:"flex",gap:10,marginBottom:"1.5rem",flexWrap:"wrap",alignItems:"center"}}>
               <select value={ym} onChange={e=>setYm(e.target.value)} style={{padding:"9px 14px",borderRadius:10,border:"1.5px solid #E2E8F0",fontSize:14,fontWeight:700,color:NAVY,background:"#fff",cursor:"pointer",outline:"none"}}>{months.map(m=><option key={m} value={m}>{fmtYM(m)}</option>)}</select>
@@ -1368,14 +1606,14 @@ function App(){
       </div>
       <div style={{width:36,height:36,border:"3px solid rgba(255,255,255,0.2)",borderTop:"3px solid #fff",borderRadius:"50%",animation:"spin 0.8s linear infinite"}}/>
       <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
-      <p style={{color:"rgba(255,255,255,0.5)",fontSize:13,margin:0}}>Connexion Firebase…</p>
+      <p style={{color:"rgba(255,255,255,0.5)",fontSize:13,margin:0}}>Chargement…</p>
     </div>
   );
 
   if(view==="setup")     return<FirebaseSetup/>;
   if(view==="landing")   return<Landing onEmployee={()=>go("empLogin")} onAdmin={()=>go("adminLogin")} fbReady={FB_READY}/>;
   if(view==="empLogin")  return<EmpLogin employees={employees} onLogin={e=>{setEmployee(e);go("empDash");}} onBack={()=>go("landing")}/>;
-  if(view==="empDash")   return<EmpDash employee={employee} onLogout={()=>{setEmployee(null);go("landing");}}/>;
+  if(view==="empDash")   return<EmpDash employee={employee} employees={employees} onLogout={()=>{setEmployee(null);go("landing");}} onEmpUpdate={emp=>{setEmployee(emp);setEmployees(prev=>prev.map(e=>e.id===emp.id?emp:e));}}/>; 
   if(view==="adminLogin")return<AdminLogin onLogin={()=>go("adminDash")} onBack={()=>go("landing")}/>;
   if(view==="adminDash") return<AdminDash employees={employees} onLogout={()=>go("landing")} onEmpChange={setEmployees}/>;
   return null;
