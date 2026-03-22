@@ -46,8 +46,11 @@ const GS_READY = SCRIPT_URL && SCRIPT_URL !== "VOTRE_APPS_SCRIPT_URL";
 async function sg(k){
   if(GS_READY){
     try{
+      const ctrl=new AbortController();
+      const tid=setTimeout(()=>ctrl.abort(),8000); // timeout 8s
       const url=`${SCRIPT_URL}?secret=${SECRET}&action=get&key=${encodeURIComponent(k)}`;
-      const r=await fetch(url,{redirect:"follow"});
+      const r=await fetch(url,{redirect:"follow",signal:ctrl.signal});
+      clearTimeout(tid);
       const j=await r.json();
       if(j.ok && j.data!==null){
         lss(k,j.data); // mise à jour cache local
@@ -97,7 +100,6 @@ const CONTRATS=[
 ];
 function ct(id){return CONTRATS.find(c=>c.id===id)||{label:id||"",color:"#718096",bg:"#F7FAFC"};}
 // IDs PERMANENTS — ne jamais modifier ces IDs
-// Ils correspondent exactement aux documents dans Firebase Firestore
 const INIT_EMP=[
   {id:"emp_1774035340883",name:"Valentin Chanonat", pin:"1111",contractType:"cdi", entryDate:"2020-10-01",photo:"",email:"",phone:""},
   {id:"emp_1774035394447",name:"Alexia Da Silva",   pin:"2222",contractType:"cdi", entryDate:"",photo:"",email:"",phone:""},
@@ -125,7 +127,9 @@ function today(){const d=new Date();return`${d.getFullYear()}-${String(d.getMont
 function fmtDate(s){if(!s)return"";const[y,m,d]=s.split("-");const dt=new Date(Number(y),Number(m)-1,Number(d));return`${DAYS_FR[dt.getDay()]} ${d}/${m}/${y}`;}
 function monthRange(back=5){const now=new Date(),arr=[];for(let i=back;i>=0;i--){const d=new Date(now.getFullYear(),now.getMonth()-i,1);arr.push(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`);}return arr;}
 // Tous les mois depuis mars 2026 jusqu'au mois courant
+let _monthsCache=null;
 function monthsSinceStart(){
+  if(_monthsCache && _monthsCache[_monthsCache.length-1]===getYM()) return _monthsCache;
   const start=new Date(2026,2,1); // mars 2026
   const now=new Date();
   const arr=[];
@@ -134,6 +138,7 @@ function monthsSinceStart(){
     arr.push(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`);
     d.setMonth(d.getMonth()+1);
   }
+  _monthsCache=arr;
   return arr;
 }
 function initials(n){return n.split(" ").map(w=>w[0]).join("").slice(0,2).toUpperCase();}
@@ -179,8 +184,8 @@ function FirebaseSetup(){
       <div style={{background:"#fff",borderRadius:24,padding:"2rem",width:"100%",maxWidth:480,boxShadow:"0 24px 64px rgba(0,0,0,0.4)"}}>
         <div style={{textAlign:"center",marginBottom:"1.75rem"}}>
           <div style={{width:64,height:64,borderRadius:18,background:"#FFF3E0",display:"flex",alignItems:"center",justifyContent:"center",fontSize:34,margin:"0 auto 1rem"}}>🔧</div>
-          <h2 style={{fontWeight:800,fontSize:21,color:NAVY,margin:0}}>Configuration Firebase requise</h2>
-          <p style={{color:"#718096",fontSize:14,margin:"8px 0 0",lineHeight:1.6}}>Firebase n'est pas encore configuré. Suivez les étapes ci-dessous pour activer la synchronisation en temps réel.</p>
+          <h2 style={{fontWeight:800,fontSize:21,color:NAVY,margin:0}}>Configuration requise</h2>
+          <p style={{color:"#718096",fontSize:14,margin:"8px 0 0",lineHeight:1.6}}>Google Apps Script n'est pas configuré. Suivez les étapes dans le guide de déploiement.</p>
         </div>
 
         <div style={{display:"flex",flexDirection:"column",gap:14}}>
@@ -257,7 +262,7 @@ function Landing({onEmployee,onAdmin,fbReady}){
           <div style={{color:"rgba(255,255,255,0.35)",fontSize:22}}>›</div>
         </button>
       </div>
-      <p style={{color:"rgba(255,255,255,0.2)",fontSize:11,marginTop:"3rem",textAlign:"center"}}>Fermapro © 2025</p>
+      <p style={{color:"rgba(255,255,255,0.2)",fontSize:11,marginTop:"3rem",textAlign:"center"}}>Fermapro © 2026</p>
     </div>
   );
 }
@@ -268,7 +273,24 @@ function EmpLogin({employees,onLogin,onBack}){
   const[sel,setSel]=useState(null);
   const[pin,setPin]=useState("");
   const[err,setErr]=useState("");
-  function doLogin(){if(pin===sel.pin)onLogin(sel);else{setErr("Code PIN incorrect.");setPin("");}}
+  const[attempts,setAttempts]=useState(0);
+  const[locked,setLocked]=useState(false);
+  function doLogin(){
+    if(locked)return;
+    if(pin===sel.pin){setAttempts(0);onLogin(sel);}
+    else{
+      const next=attempts+1;
+      setAttempts(next);
+      setPin("");
+      if(next>=5){
+        setLocked(true);
+        setErr("Trop de tentatives. Attendez 30 secondes.");
+        setTimeout(()=>{setLocked(false);setAttempts(0);setErr("");},30000);
+      } else {
+        setErr(`Code PIN incorrect. (${next}/5)`);
+      }
+    }
+  }
   return(
     <div style={{minHeight:"100vh",background:"#F7F9FC"}}>
       <div style={{background:`linear-gradient(135deg,${NAVYDK},${NAVYLT})`,padding:"1rem 1.25rem"}}>
@@ -414,6 +436,11 @@ function ProfileEdit({employee,onSave,onClose,onExport,ym}){
 
   async function handleSave(){
     if(!/^\d{4}$/.test(pin)){setErr("Le PIN doit faire exactement 4 chiffres.");return;}
+    // Vérifier unicité PIN via onCheckPin si fourni
+    if(typeof onCheckPin==="function"){
+      const conflict=onCheckPin(pin,employee.id);
+      if(conflict){setErr(`Ce PIN est déjà utilisé par ${conflict}.`);return;}
+    }
     setSaving(true);setErr("");
     await onSave({pin,photo});
     setSaving(false);setSaved(true);
@@ -450,7 +477,7 @@ function ProfileEdit({employee,onSave,onClose,onExport,ym}){
       {saved&&<div style={{background:"#F0FFF4",border:"1.5px solid #9AE6B4",borderRadius:10,padding:"0.6rem 1rem",color:"#276749",fontSize:13,marginBottom:10,fontWeight:600}}>✅ Profil mis à jour !</div>}
       <Btn onClick={handleSave} disabled={saving}>{saving?"Sauvegarde…":"💾 Enregistrer"}</Btn>
       <button onClick={onExport} style={{width:"100%",marginTop:10,background:`linear-gradient(135deg,${NAVY},${NAVYLT})`,color:"#fff",border:"none",borderRadius:12,padding:"11px",fontSize:13,fontWeight:700,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
-        📥 Exporter mes heures — {fmtYM(ym)}
+        📥 Exporter toutes mes heures
       </button>
     </Card>
   );
@@ -475,7 +502,7 @@ function EmpDash({employee,employees,onLogout,onEmpUpdate}){
     function fmtWeek(mon){const[y,m,d]=mon.split("-");const mo=new Date(Number(y),Number(m)-1,Number(d));const su=new Date(mo);su.setDate(mo.getDate()+6);const p=n=>String(n).padStart(2,"0");return`S${getWeekNum(mo)} — ${p(mo.getDate())}/${p(mo.getMonth()+1)} au ${p(su.getDate())}/${p(su.getMonth()+1)}/${su.getFullYear()}`;}
     function fmtHL(h){const hh=Math.floor(Math.abs(h)),mm=Math.round((Math.abs(h)-hh)*60);return`${h<0?"-":""}${hh}h${String(mm).padStart(2,"0")}`;}
 
-    // Charger les 6 derniers mois depuis Firebase
+    // Charger toutes les données depuis Google Sheets
     Promise.all(monthsSinceStart().map(m=>sg(`fp:${employee.id}:${m}`).then(d=>d||[]))).then(results=>{
       const all=results.flat();
       if(!all.length){alert("Aucune donnée à exporter.");return;}
@@ -585,7 +612,7 @@ function EmpDash({employee,employees,onLogout,onEmpUpdate}){
             const next=employees.map(e=>e.id===employee.id?{...e,...updates}:e);
             await ss("fp:employees",next);
             onEmpUpdate({...employee,...updates});
-          }} onClose={()=>setShowProfile(false)} onExport={exportMyXLSX} ym={ym}/>
+          }} onCheckPin={(pin,id)=>{const dup=employees.find(e=>e.pin===pin&&e.id!==id);return dup?dup.name:null;}} onClose={()=>setShowProfile(false)} onExport={exportMyXLSX} ym={ym}/>
         )}
 
         <Card style={{marginTop:"-2rem",marginBottom:"1.25rem"}}>
@@ -667,7 +694,7 @@ function EmpDash({employee,employees,onLogout,onEmpUpdate}){
                         <div style={{fontWeight:800,fontSize:18,color:accent}}>{isAbs?`${entry.nbDays||1}j`:fmtH(h)}</div>
                         <div style={{display:"flex",gap:5,marginTop:5,justifyContent:"flex-end"}}>
                           <button onClick={()=>{setEditEntry(entry);setMode(null);}} style={{background:`${NAVY}10`,border:"none",borderRadius:7,padding:"4px 9px",fontSize:12,color:NAVY,cursor:"pointer"}}>✏</button>
-                          <button onClick={()=>del(entry.id)} style={{background:"#FFF5F5",border:"none",borderRadius:7,padding:"4px 9px",fontSize:12,color:"#C53030",cursor:"pointer"}}>🗑</button>
+                          <button onClick={()=>{if(window.confirm("Supprimer cette entrée ?"))del(entry.id);}} style={{background:"#FFF5F5",border:"none",borderRadius:7,padding:"4px 9px",fontSize:12,color:"#C53030",cursor:"pointer"}}>🗑</button>
                         </div>
                       </div>
                     </div>
@@ -948,7 +975,6 @@ function MessagesPanel({employees}){
         const emp=actifs.find(e=>e.id===id);
         return{name:emp.name,value:channel==="sms"?emp.phone:emp.email};
       });
-      const url=`${SCRIPT_URL}?secret=${SECRET}&action=send_message`;
       const r=await fetch(SCRIPT_URL,{
         method:"POST",
         headers:{"Content-Type":"text/plain"},
@@ -1037,7 +1063,7 @@ function MessagesPanel({employees}){
         </Btn>
 
         <div style={{marginTop:12,fontSize:11,color:"#A0AEC0",textAlign:"center"}}>
-          Envoi via <strong>SpotHit</strong> · Configurez votre clé API dans Apps Script
+          {channel==="sms"?<>Envoi via <strong>SpotHit</strong> · Configurez votre clé API dans Apps Script</>:<>Envoi via <strong>Google MailApp</strong> · lié à votre compte Google</>}
         </div>
       </Card>
     </div>
@@ -1059,36 +1085,23 @@ function AdminDash({employees:initEmp,onLogout,onEmpChange}){
 
   // Restauration manuelle depuis Firebase ou localStorage
   async function restoreEmployees(){
-    const fromFB = await fg(keyToPath("fp:employees"));
-    const fromLocal = lsg("fp:employees");
-    const best = (fromFB&&fromFB.length>0) ? fromFB : (fromLocal&&fromLocal.length>0) ? fromLocal : null;
-    if(best){
-      setEmployees(best);
-      onEmpChange(best);
-      lss("fp:employees", best);
-      fs_set(keyToPath("fp:employees"), best);
-      alert(`✅ ${best.length} salarié(s) restauré(s).`);
-    } else {
-      alert("⚠️ Aucune donnée trouvée.");
-    }
+    try{
+      const fromSheets = await sg("fp:employees");
+      const fromLocal = lsg("fp:employees");
+      const best = (fromSheets&&fromSheets.length>0) ? fromSheets : (fromLocal&&fromLocal.length>0) ? fromLocal : null;
+      if(best){
+        setEmployees(best);
+        onEmpChange(best);
+        lss("fp:employees", best);
+        ss("fp:employees", best);
+        alert(`✅ ${best.length} salarié(s) restauré(s).`);
+      } else {
+        alert("⚠️ Aucune donnée trouvée dans Google Sheets ni en local.");
+      }
+    }catch(e){alert("❌ Erreur restauration : "+e.message);}
   }
 
-  // ── Migration : liste tous les docs Firestore et trouve les orphelins ─────
-  const[showMigration,setShowMigration]=useState(false);
-  const[orphanDocs,setOrphanDocs]=useState([]);
-  const[migAssign,setMigAssign]=useState({});
-  const[migLoading,setMigLoading]=useState(false);
-
-  async function loadOrphans(){
-    // Migration non disponible avec Apps Script — fonctionnalité Firebase uniquement
-    setOrphanDocs([]);
-    setMigLoading(false);
-  }
-
-  async function doMigration(){
-    alert("Migration non disponible dans cette version.");
-    setShowMigration(false);
-  }
+  // Migration supprimée (Firebase uniquement)
 
   useEffect(()=>{
     if(tab!=="heures")return;
@@ -1149,7 +1162,8 @@ function AdminDash({employees:initEmp,onLogout,onEmpChange}){
 
   // ── SAUVEGARDE AUTO : vérifie au chargement + surveille 22h ──────────────────
   useEffect(()=>{
-    const today = new Date().toISOString().slice(0,10);
+    const _now=new Date();
+    const today=`${_now.getFullYear()}-${String(_now.getMonth()+1).padStart(2,"0")}-${String(_now.getDate()).padStart(2,"0")}`;
     const lastBackup = lsg(BACKUP_KEY);
 
     // Si pas de sauvegarde aujourd'hui ET heure >= 22h → sauvegarder maintenant
@@ -1162,7 +1176,7 @@ function AdminDash({employees:initEmp,onLogout,onEmpChange}){
     // Surveiller l'heure toutes les minutes pour déclencher à 22h00 pile
     const timer = setInterval(()=>{
       const now = new Date();
-      const todayNow = now.toISOString().slice(0,10);
+      const todayNow=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}-${String(now.getDate()).padStart(2,"0")}`;
       const lastB = lsg(BACKUP_KEY);
       if(now.getHours()===22 && now.getMinutes()===0 && lastB !== todayNow){
         console.log("Sauvegarde automatique 22h00");
@@ -1415,39 +1429,7 @@ function AdminDash({employees:initEmp,onLogout,onEmpChange}){
         </div>
       )}
 
-      {/* ── Modal Migration ─────────────────────────────────────── */}
-      {showMigration&&(
-        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:999,display:"flex",alignItems:"center",justifyContent:"center",padding:"1rem"}}>
-          <div style={{background:"#fff",borderRadius:20,padding:"1.5rem",width:"100%",maxWidth:600,maxHeight:"80vh",overflowY:"auto",boxShadow:"0 24px 64px rgba(0,0,0,0.4)"}}>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"1rem"}}>
-              <h3 style={{margin:0,color:NAVY,fontSize:18,fontWeight:800}}>🔀 Migration des heures</h3>
-              <button onClick={()=>setShowMigration(false)} style={{background:"#FFF5F5",border:"none",borderRadius:8,padding:"6px 12px",color:"#C53030",cursor:"pointer",fontWeight:700}}>✕ Fermer</button>
-            </div>
-            {migLoading?<div style={{textAlign:"center",padding:"2rem",color:"#718096"}}>Chargement des documents…</div>:
-            orphanDocs.length===0?<div style={{textAlign:"center",padding:"2rem",color:"#48BB78",fontWeight:700}}>✅ Aucun document orphelin trouvé.</div>:(
-              <>
-                <p style={{color:"#718096",fontSize:13,marginBottom:"1rem"}}>Ces documents d'heures n'appartiennent à aucun salarié actuel. Assignez-les au bon salarié :</p>
-                {orphanDocs.map(doc=>(
-                  <div key={doc.docName} style={{background:"#F7F9FC",borderRadius:12,padding:"0.75rem 1rem",marginBottom:8,display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
-                    <div style={{flex:1}}>
-                      <div style={{fontWeight:700,fontSize:13,color:NAVY}}>{doc.ym} — {doc.count} entrée(s)</div>
-                      <div style={{fontSize:11,color:"#A0AEC0",fontFamily:"monospace"}}>{doc.empId}</div>
-                    </div>
-                    <select value={migAssign[doc.docName]||""} onChange={e=>setMigAssign(p=>({...p,[doc.docName]:e.target.value}))}
-                      style={{borderRadius:8,border:"1.5px solid #E2E8F0",padding:"6px 10px",fontSize:13,color:NAVY,fontWeight:600}}>
-                      <option value="">— Choisir un salarié —</option>
-                      {employees.map(emp=><option key={emp.id} value={emp.id}>{emp.name}</option>)}
-                    </select>
-                  </div>
-                ))}
-                <button onClick={doMigration} style={{width:"100%",marginTop:"1rem",background:`linear-gradient(135deg,${NAVY},${NAVYLT})`,color:"#fff",border:"none",borderRadius:12,padding:"12px",fontSize:14,fontWeight:700,cursor:"pointer"}}>
-                  🔀 Migrer les documents sélectionnés
-                </button>
-              </>
-            )}
-          </div>
-        </div>
-      )}
+
       <div style={{background:`linear-gradient(135deg,${NAVYDK},${NAVYLT})`,padding:"1.25rem 1.5rem 0"}}>
         <div style={{maxWidth:900,margin:"0 auto"}}>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"1.25rem"}}>
