@@ -1,0 +1,1545 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="theme-color" content="#1E3A7B"/>
+<title>Fermapro – Heures & Absences</title>
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png"/>
+<link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png"/>
+<link rel="icon" type="image/png" sizes="512x512" href="icon-512.png"/>
+<link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png"/>
+<link rel="shortcut icon" href="favicon-32.png"/>
+<meta name="apple-mobile-web-app-title" content="Fermapro"/>
+<meta name="application-name" content="Fermapro"/>
+<style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#F4F6FA;}
+input,button,select{font-family:inherit;}
+#root{min-height:100vh;}
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<!-- React -->
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
+<!-- ═══ GOOGLE SHEETS — APPS SCRIPT STORAGE ══════════════════ -->
+<script>
+// 🔧 REMPLIR avec l'URL de votre déploiement Apps Script
+const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbx_DWRRrchuJUTYKFQpqJSm0dk8ATlsmX2o4Gffc4dPzuyl34Ey0MlanY3XDFZQXbbqyw/exec";
+
+// ✅ SÉCURISÉ — token synchronisé avec PropertiesService dans Apps Script
+const SECRET = "Fp91!#Pro";
+
+// ── localStorage — cache local immédiat, toujours disponible ─────────────────
+function lsg(k){try{const v=localStorage.getItem(k);return v?JSON.parse(v):null;}catch{return null;}}
+function lss(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}}
+
+// ── Indicateur connexion ──────────────────────────────────────────────────────
+const GS_READY = SCRIPT_URL && SCRIPT_URL !== "VOTRE_APPS_SCRIPT_URL";
+
+// ── Lecture depuis Apps Script (GET — pas de problème CORS) ──────────────────
+async function sg(k){
+  if(GS_READY){
+    try{
+      const ctrl=new AbortController();
+      const tid=setTimeout(()=>ctrl.abort(),8000); // timeout 8s
+      const url=`${SCRIPT_URL}?secret=${SECRET}&action=get&key=${encodeURIComponent(k)}`;
+      const r=await fetch(url,{redirect:"follow",signal:ctrl.signal});
+      clearTimeout(tid);
+      const j=await r.json();
+      if(j.ok && j.data!==null){
+        lss(k,j.data); // mise à jour cache local
+        return j.data;
+      }
+    }catch(e){console.warn("sg Apps Script error, using local cache",e);}
+  }
+  return lsg(k); // fallback local
+}
+
+// ── Écriture vers Apps Script (POST text/plain — pas de preflight CORS) ──────
+async function ss(k,v){
+  lss(k,v); // localStorage IMMÉDIAT — toujours fiable
+  if(!GS_READY)return;
+  try{
+    fetch(SCRIPT_URL,{
+      method:"POST",
+      headers:{"Content-Type":"text/plain"}, // simple request, pas de preflight
+      body:JSON.stringify({secret:SECRET,action:"set",key:k,value:v}),
+      redirect:"follow"
+    }).catch(e=>console.warn("ss async error",e));
+  }catch(e){console.warn("ss error",e);}
+}
+
+// ── Alias compatibilité ───────────────────────────────────────────────────────
+function keyToPath(k){return k;}
+const FB_READY=GS_READY;
+const FS_BASE=null; // plus utilisé
+
+console.log(GS_READY?"✅ Google Sheets Apps Script prêt":"⚠️ Mode local — configurez SCRIPT_URL");
+</script>
+
+<script type="text/babel">
+const{useState,useEffect,useCallback}=React;
+
+// ── PALETTE & CONSTANTES ─────────────────────────────────────────────────────
+const NAVY="#1E3A7B",NAVYDK="#142B5C",NAVYLT="#2A4F9E",MAG="#E8457A",MAGLT="#F07099";
+const MONTHS_FR=["Janvier","Février","Mars","Avril","Mai","Juin","Juillet","Août","Septembre","Octobre","Novembre","Décembre"];
+const DAYS_FR=["Dim","Lun","Mar","Mer","Jeu","Ven","Sam"];
+
+// ✅ SÉCURISÉ — mot de passe Back Office renforcé
+const ADMIN_PASS="Ferm@Admin!26";
+
+const CONTRATS=[
+  {id:"cdi",  label:"CDI",         color:"#2F855A",bg:"#F0FFF4"},
+  {id:"cdd",  label:"CDD",         color:"#2B6CB0",bg:"#EBF8FF"},
+  {id:"inte", label:"Intérim",     color:"#B7791F",bg:"#FFFAF0"},
+  {id:"stage",label:"Stage",       color:"#553C9A",bg:"#FAF5FF"},
+  {id:"app",  label:"Apprentissage",color:"#C05621",bg:"#FFFAF0"},
+];
+function ct(id){return CONTRATS.find(c=>c.id===id)||{label:id||"",color:"#718096",bg:"#F7FAFC"};}
+// IDs PERMANENTS — ne jamais modifier ces IDs
+const INIT_EMP=[
+  {id:"emp_1774035340883",name:"Valentin Chanonat", pin:"1111",contractType:"cdi", entryDate:"2020-10-01",photo:"",email:"",phone:""},
+  {id:"emp_1774035394447",name:"Alexia Da Silva",   pin:"2222",contractType:"cdi", entryDate:"",photo:"",email:"",phone:""},
+  {id:"emp_1774035408617",name:"Julien Pierre",     pin:"3333",contractType:"cdi", entryDate:"",photo:"",email:"",phone:""},
+  {id:"emp_1774035420115",name:"Charles Malesa",    pin:"4444",contractType:"cdi", entryDate:"",photo:"",email:"",phone:""},
+  {id:"emp_1774035432347",name:"Sacha Bedu",        pin:"5555",contractType:"cdi", entryDate:"",photo:"",email:"",phone:""},
+  {id:"emp_1774035448182",name:"Anthony Gatien",    pin:"6666",contractType:"cdi", entryDate:"",photo:"",email:"",phone:""},
+];
+const ABS=[
+  {id:"cp",   label:"Congés payés",        color:"#2F855A",bg:"#F0FFF4",icon:"🏖"},
+  {id:"rtt",  label:"RTT",                 color:"#2B6CB0",bg:"#EBF8FF",icon:"📅"},
+  {id:"mal",  label:"Maladie",             color:"#C53030",bg:"#FFF5F5",icon:"🤒"},
+  {id:"fam",  label:"Congé familial",      color:"#B7791F",bg:"#FFFAF0",icon:"👨‍👩‍👧"},
+  {id:"form", label:"Formation",           color:"#553C9A",bg:"#FAF5FF",icon:"📚"},
+  {id:"accd", label:"Accident du travail", color:"#C05621",bg:"#FFFAF0",icon:"🦺"},
+  {id:"sans", label:"Absence injustifiée", color:"#718096",bg:"#F7FAFC",icon:"❓"},
+  {id:"autre",label:"Autre",               color:"#4A5568",bg:"#EDF2F7",icon:"📝"},
+];
+function at(id){return ABS.find(a=>a.id===id)||ABS[ABS.length-1];}
+function calcH(s,e,b=0){if(!s||!e)return 0;const[sh,sm]=s.split(":").map(Number),[eh,em]=e.split(":").map(Number);return Math.max(0,((eh*60+em)-(sh*60+sm)-Number(b))/60);}
+function fmtH(h){const hh=Math.floor(h),mm=Math.round((h-hh)*60);return mm>0?`${hh}h${String(mm).padStart(2,"0")}`:`${hh}h`;}
+function getYM(){const d=new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;}
+function fmtYM(ym){const[y,m]=ym.split("-");return`${MONTHS_FR[parseInt(m)-1]} ${y}`;}
+function today(){const d=new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;}
+function fmtDate(s){if(!s)return"";const[y,m,d]=s.split("-");const dt=new Date(Number(y),Number(m)-1,Number(d));return`${DAYS_FR[dt.getDay()]} ${d}/${m}/${y}`;}
+function monthRange(back=5){const now=new Date(),arr=[];for(let i=back;i>=0;i--){const d=new Date(now.getFullYear(),now.getMonth()-i,1);arr.push(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`);}return arr;}
+// Tous les mois depuis mars 2026 jusqu'au mois courant
+let _monthsCache=null;
+function monthsSinceStart(){
+  if(_monthsCache && _monthsCache[_monthsCache.length-1]===getYM()) return _monthsCache;
+  const start=new Date(2026,2,1); // mars 2026
+  const now=new Date();
+  const arr=[];
+  let d=new Date(start);
+  while(d<=now){
+    arr.push(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`);
+    d.setMonth(d.getMonth()+1);
+  }
+  _monthsCache=arr;
+  return arr;
+}
+function initials(n){return n.split(" ").map(w=>w[0]).join("").slice(0,2).toUpperCase();}
+function daysBetween(d1,d2){return Math.round(Math.abs((new Date(d2||d1)-new Date(d1))/86400000))+1;}
+
+// ── UI PRIMITIVES ─────────────────────────────────────────────────────────────
+function Btn({children,onClick,variant="primary",style={},disabled=false}){
+  const m={
+    primary:{background:MAG,color:"#fff",border:"none"},
+    navy:{background:NAVY,color:"#fff",border:"none"},
+    outline:{background:"#fff",color:NAVY,border:`1.5px solid ${NAVY}30`},
+    danger:{background:"#FFF0F0",color:"#C53030",border:"1.5px solid #FEB2B2"},
+    green:{background:"#F0FFF4",color:"#276749",border:"1.5px solid #9AE6B4"},
+    amber:{background:"#FFFAF0",color:"#B7791F",border:"1.5px solid #F6AD55"},
+  };
+  return<button onClick={onClick} disabled={disabled} style={{...m[variant],borderRadius:12,padding:"0.85rem 1.2rem",fontWeight:700,fontSize:14,cursor:disabled?"not-allowed":"pointer",opacity:disabled?0.5:1,display:"flex",alignItems:"center",justifyContent:"center",gap:8,width:"100%",...style}}>{children}</button>;
+}
+function Inp({label,xstyle={},...props}){
+  const[f,setF]=useState(false);
+  return(
+    <div style={{marginBottom:14}}>
+      {label&&<label style={{display:"block",fontSize:11,fontWeight:700,color:"#4A5568",marginBottom:5,letterSpacing:0.5,textTransform:"uppercase"}}>{label}</label>}
+      <input style={{width:"100%",padding:"0.75rem 1rem",borderRadius:10,border:`1.5px solid ${f?NAVY:"#E2E8F0"}`,fontSize:15,outline:"none",boxSizing:"border-box",background:"#fff",color:"#1A202C",transition:"border-color 0.2s",...xstyle}} onFocus={()=>setF(true)} onBlur={()=>setF(false)} {...props}/>
+    </div>
+  );
+}
+function Avatar({name,size=40,bg,color=NAVY,fs=14}){return<div style={{width:size,height:size,borderRadius:"50%",background:bg||`${NAVY}15`,display:"flex",alignItems:"center",justifyContent:"center",fontWeight:700,fontSize:fs,color,flexShrink:0}}>{initials(name)}</div>;}
+function Badge({children,color=MAG,bg}){return<span style={{background:bg||`${color}18`,color,borderRadius:6,padding:"2px 10px",fontSize:12,fontWeight:700,whiteSpace:"nowrap"}}>{children}</span>;}
+function Card({children,style={}}){return<div style={{background:"#fff",borderRadius:18,boxShadow:"0 2px 16px rgba(0,0,0,0.07)",padding:"1.25rem",...style}}>{children}</div>;}
+function Spinner({color=NAVY}){
+  return(
+    <div style={{display:"flex",alignItems:"center",justifyContent:"center",padding:"3rem"}}>
+      <div style={{width:36,height:36,border:`3px solid ${color}20`,borderTop:`3px solid ${color}`,borderRadius:"50%",animation:"spin 0.8s linear infinite"}}/>
+      <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+    </div>
+  );
+}
+
+// ── ÉCRAN CONFIGURATION FIREBASE ──────────────────────────────────────────────
+function FirebaseSetup(){
+  return(
+    <div style={{minHeight:"100vh",background:`linear-gradient(155deg,${NAVYDK},${NAVYLT})`,display:"flex",alignItems:"center",justifyContent:"center",padding:"2rem"}}>
+      <div style={{background:"#fff",borderRadius:24,padding:"2rem",width:"100%",maxWidth:480,boxShadow:"0 24px 64px rgba(0,0,0,0.4)"}}>
+        <div style={{textAlign:"center",marginBottom:"1.75rem"}}>
+          <div style={{width:64,height:64,borderRadius:18,background:"#FFF3E0",display:"flex",alignItems:"center",justifyContent:"center",fontSize:34,margin:"0 auto 1rem"}}>🔧</div>
+          <h2 style={{fontWeight:800,fontSize:21,color:NAVY,margin:0}}>Configuration requise</h2>
+          <p style={{color:"#718096",fontSize:14,margin:"8px 0 0",lineHeight:1.6}}>Google Apps Script n'est pas configuré. Suivez les étapes dans le guide de déploiement.</p>
+        </div>
+
+        <div style={{display:"flex",flexDirection:"column",gap:14}}>
+          {[
+            {n:1,t:"Créez un projet Firebase",d:'Allez sur console.firebase.google.com → "Créer un projet" → donnez-lui le nom "fermapro"'},
+            {n:2,t:"Activez Firestore",d:'Dans votre projet → "Firestore Database" → "Créer une base de données" → choisir "Mode production"'},
+            {n:3,t:"Ajoutez une application Web",d:'⚙️ Paramètres → "Ajouter une application" → choisir l\'icône </> → copiez le firebaseConfig affiché'},
+            {n:4,t:"Collez la config dans le fichier",d:'Ouvrez fermapro.html avec Notepad, remplacez les valeurs VOTRE_... par vos vraies valeurs Firebase'},
+            {n:5,t:"Configurez les règles Firestore",d:'Firestore → Règles → remplacez tout par le texte de règles ci-dessous, puis publiez'},
+          ].map(s=>(
+            <div key={s.n} style={{display:"flex",gap:14,alignItems:"flex-start"}}>
+              <div style={{width:28,height:28,borderRadius:"50%",background:MAG,color:"#fff",fontWeight:800,fontSize:13,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,marginTop:2}}>{s.n}</div>
+              <div>
+                <div style={{fontWeight:700,color:NAVY,fontSize:14,marginBottom:3}}>{s.t}</div>
+                <div style={{color:"#718096",fontSize:12,lineHeight:1.6}}>{s.d}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div style={{background:"#1A202C",borderRadius:12,padding:"1rem",marginTop:"1.5rem",overflowX:"auto"}}>
+          <div style={{color:"#68D391",fontSize:11,fontWeight:700,marginBottom:8,letterSpacing:0.5}}>RÈGLES FIRESTORE À COPIER</div>
+          <pre style={{color:"#E2E8F0",fontSize:11,margin:0,lineHeight:1.8,fontFamily:"monospace"}}>{`rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /fermapro/{document} {
+      allow read, write: if true;
+    }
+  }
+}`}</pre>
+        </div>
+
+        <div style={{background:"#EBF8FF",border:"1.5px solid #90CDF4",borderRadius:12,padding:"1rem",marginTop:"1rem"}}>
+          <div style={{color:"#2B6CB0",fontSize:12,fontWeight:700,marginBottom:4}}>ℹ️ Firebase gratuit</div>
+          <div style={{color:"#2C5282",fontSize:12,lineHeight:1.6}}>Le plan gratuit Firebase (Spark) permet jusqu'à 50 000 lectures et 20 000 écritures par jour — largement suffisant pour une PME.</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── LANDING ───────────────────────────────────────────────────────────────────
+function Landing({onEmployee,onAdmin,fbReady}){
+  return(
+    <div style={{minHeight:"100vh",background:`linear-gradient(155deg,${NAVYDK} 0%,${NAVY} 55%,${NAVYLT} 100%)`,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"2rem",position:"relative",overflow:"hidden"}}>
+      <div style={{position:"absolute",top:-80,right:-80,width:280,height:280,borderRadius:"50%",background:`${MAG}15`,pointerEvents:"none"}}/>
+      <div style={{marginBottom:"2.5rem",textAlign:"center"}}>
+        <div style={{width:80,height:80,borderRadius:24,background:MAG,display:"flex",alignItems:"center",justifyContent:"center",margin:"0 auto 1.25rem",boxShadow:`0 12px 40px ${MAG}60`}}>
+          <svg width="42" height="42" viewBox="0 0 42 42" fill="none"><circle cx="21" cy="21" r="17" fill="rgba(255,255,255,0.15)"/><path d="M13 21.5l5 5 11-11" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+        </div>
+        <h1 style={{color:"#fff",fontSize:32,fontWeight:800,margin:0,letterSpacing:-1}}>Fermapro</h1>
+        <p style={{color:"rgba(255,255,255,0.45)",margin:"0.5rem 0 0",fontSize:12,letterSpacing:2,fontWeight:600}}>HEURES · ABSENCES · BACK OFFICE</p>
+        {fbReady?(
+          <div style={{display:"inline-flex",alignItems:"center",gap:6,background:"rgba(72,187,120,0.25)",border:"1px solid rgba(72,187,120,0.4)",borderRadius:20,padding:"4px 12px",marginTop:10}}>
+            <div style={{width:7,height:7,borderRadius:"50%",background:"#68D391"}}/>
+            <span style={{color:"#C6F6D5",fontSize:11,fontWeight:700}}>Google Sheets connecté — Sync. temps réel</span>
+          </div>
+        ):(
+          <div style={{display:"inline-flex",alignItems:"center",gap:6,background:"rgba(246,173,85,0.25)",border:"1px solid rgba(246,173,85,0.4)",borderRadius:20,padding:"4px 12px",marginTop:10}}>
+            <div style={{width:7,height:7,borderRadius:"50%",background:"#F6AD55"}}/>
+            <span style={{color:"#FEFCBF",fontSize:11,fontWeight:700}}>Mode local — Apps Script non configuré</span>
+          </div>
+        )}
+      </div>
+      <div style={{width:"100%",maxWidth:380,display:"flex",flexDirection:"column",gap:14}}>
+        <button onClick={onEmployee} style={{background:MAG,border:"none",borderRadius:20,padding:"1.4rem 1.5rem",cursor:"pointer",textAlign:"left",display:"flex",alignItems:"center",gap:14,boxShadow:`0 10px 32px ${MAG}55`}}>
+          <div style={{width:52,height:52,borderRadius:15,background:"rgba(255,255,255,0.22)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:26,flexShrink:0}}>👷</div>
+          <div style={{flex:1}}><div style={{color:"#fff",fontWeight:800,fontSize:18}}>Espace Salarié</div><div style={{color:"rgba(255,255,255,0.8)",fontSize:13,marginTop:3}}>Saisir mes heures & absences</div></div>
+          <div style={{color:"rgba(255,255,255,0.6)",fontSize:22}}>›</div>
+        </button>
+        <button onClick={onAdmin} style={{background:"rgba(255,255,255,0.07)",border:"1.5px solid rgba(255,255,255,0.18)",borderRadius:20,padding:"1.4rem 1.5rem",cursor:"pointer",textAlign:"left",display:"flex",alignItems:"center",gap:14}}>
+          <div style={{width:52,height:52,borderRadius:15,background:"rgba(255,255,255,0.1)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:26,flexShrink:0}}>📊</div>
+          <div style={{flex:1}}><div style={{color:"#fff",fontWeight:800,fontSize:18}}>Back Office</div><div style={{color:"rgba(255,255,255,0.5)",fontSize:13,marginTop:3}}>Récapitulatif — Admin</div></div>
+          <div style={{color:"rgba(255,255,255,0.35)",fontSize:22}}>›</div>
+        </button>
+      </div>
+      <p style={{color:"rgba(255,255,255,0.2)",fontSize:11,marginTop:"3rem",textAlign:"center"}}>Fermapro © 2026</p>
+    </div>
+  );
+}
+
+// ── LOGIN SALARIÉ ─────────────────────────────────────────────────────────────
+function EmpLogin({employees,onLogin,onBack}){
+  const[step,setStep]=useState("select");
+  const[sel,setSel]=useState(null);
+  const[pin,setPin]=useState("");
+  const[err,setErr]=useState("");
+  const[attempts,setAttempts]=useState(0);
+  const[locked,setLocked]=useState(false);
+  function doLogin(){
+    if(locked)return;
+    if(pin===sel.pin){setAttempts(0);onLogin(sel);}
+    else{
+      const next=attempts+1;
+      setAttempts(next);
+      setPin("");
+      if(next>=5){
+        setLocked(true);
+        setErr("Trop de tentatives. Attendez 30 secondes.");
+        setTimeout(()=>{setLocked(false);setAttempts(0);setErr("");},30000);
+      } else {
+        setErr(`Code PIN incorrect. (${next}/5)`);
+      }
+    }
+  }
+  return(
+    <div style={{minHeight:"100vh",background:"#F7F9FC"}}>
+      <div style={{background:`linear-gradient(135deg,${NAVYDK},${NAVYLT})`,padding:"1rem 1.25rem"}}>
+        <div style={{maxWidth:440,margin:"0 auto",display:"flex",alignItems:"center",gap:10}}>
+          <button onClick={step==="pin"?()=>setStep("select"):onBack} style={{background:"rgba(255,255,255,0.15)",border:"none",color:"#fff",width:36,height:36,borderRadius:10,cursor:"pointer",fontSize:18,display:"flex",alignItems:"center",justifyContent:"center"}}>←</button>
+          <div><div style={{color:"#fff",fontWeight:800,fontSize:17}}>Connexion Salarié</div><div style={{color:"rgba(255,255,255,0.55)",fontSize:12}}>{step==="select"?"Sélectionnez votre nom":`Bonjour, ${sel?.name}`}</div></div>
+        </div>
+      </div>
+      <div style={{padding:"1.5rem",maxWidth:440,margin:"0 auto"}}>
+        {step==="select"?(
+          <div style={{display:"flex",flexDirection:"column",gap:10}}>
+            <p style={{color:"#718096",fontSize:12,fontWeight:700,margin:"0 0 4px",letterSpacing:0.5}}>QUI ÊTES-VOUS ?</p>
+            {employees.filter(e=>!e.archived).map(emp=>(
+              <button key={emp.id} onClick={()=>{setSel(emp);setPin("");setErr("");setStep("pin");}} style={{background:"#fff",border:"1.5px solid #E2E8F0",borderRadius:16,padding:"1rem 1.25rem",cursor:"pointer",textAlign:"left",display:"flex",alignItems:"center",gap:14}}>
+                {emp.photo?<div style={{width:44,height:44,borderRadius:"50%",overflow:"hidden",flexShrink:0}}><img src={emp.photo} style={{width:"100%",height:"100%",objectFit:"cover"}}/></div>:<Avatar name={emp.name}/>}
+                <span style={{fontWeight:700,fontSize:16,color:"#1A202C",flex:1}}>{emp.name}</span><span style={{color:"#CBD5E0",fontSize:20}}>›</span>
+              </button>
+            ))}
+          </div>
+        ):(
+          <Card style={{marginTop:"1rem"}}>
+            <div style={{textAlign:"center",marginBottom:"1.75rem"}}>
+              <div style={{width:60,height:60,borderRadius:"50%",background:`${MAG}15`,display:"flex",alignItems:"center",justifyContent:"center",fontWeight:800,fontSize:20,color:MAG,margin:"0 auto 1rem"}}>{initials(sel.name)}</div>
+              <p style={{fontWeight:800,fontSize:19,color:NAVY,margin:0}}>{sel.name}</p>
+              <p style={{color:"#A0AEC0",fontSize:13,margin:"4px 0 0"}}>Entrez votre code PIN à 4 chiffres</p>
+            </div>
+            <Inp label="Code PIN" type="password" maxLength={4} value={pin} onChange={e=>{setPin(e.target.value);setErr("");}} onKeyDown={e=>e.key==="Enter"&&pin.length===4&&doLogin()} placeholder="••••" xstyle={{fontSize:28,textAlign:"center",letterSpacing:12,fontWeight:700}}/>
+            {err&&<div style={{background:"#FFF5F5",border:"1.5px solid #FEB2B2",borderRadius:10,padding:"0.75rem 1rem",color:"#C53030",fontSize:13,marginBottom:14,fontWeight:600}}>⚠️ {err}</div>}
+            <Btn onClick={doLogin} disabled={pin.length<4}>✓ Se connecter</Btn>
+          </Card>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── FORM HEURES ───────────────────────────────────────────────────────────────
+function WorkForm({initial,onSave,onCancel}){
+  const[form,setForm]=useState({date:today(),startTime:"08:00",endTime:"17:00",breakMin:"60",note:"",...initial});
+  const h=calcH(form.startTime,form.endTime,form.breakMin);
+  const set=k=>v=>setForm(f=>({...f,[k]:v}));
+  return(
+    <Card style={{marginBottom:"1rem",border:`2px solid ${MAG}30`}}>
+      <h3 style={{fontSize:15,fontWeight:800,color:NAVY,margin:"0 0 1.25rem",display:"flex",alignItems:"center",gap:8}}>
+        <span style={{background:`${MAG}15`,color:MAG,width:28,height:28,borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,flexShrink:0}}>{initial?"✏":"⏱"}</span>
+        {initial?"Modifier les heures":"Saisir mes heures"}
+      </h3>
+      <Inp label="Date" type="date" value={form.date} onChange={e=>set("date")(e.target.value)}/>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+        <Inp label="Heure début" type="time" value={form.startTime} onChange={e=>set("startTime")(e.target.value)}/>
+        <Inp label="Heure fin" type="time" value={form.endTime} onChange={e=>set("endTime")(e.target.value)}/>
+      </div>
+      <Inp label="Pause (min)" type="number" min="0" max="240" value={form.breakMin} onChange={e=>set("breakMin")(e.target.value)}/>
+      <Inp label="Note / Chantier" value={form.note} onChange={e=>set("note")(e.target.value)} placeholder="Optionnel"/>
+      {h>0&&<div style={{background:`linear-gradient(135deg,${NAVY}10,${MAG}10)`,borderRadius:12,padding:"0.85rem 1rem",marginBottom:16,display:"flex",justifyContent:"space-between",alignItems:"center",border:`1px solid ${MAG}20`}}><span style={{color:"#4A5568",fontSize:14,fontWeight:600}}>⏱ Temps effectif</span><span style={{color:MAG,fontWeight:800,fontSize:20}}>{fmtH(h)}</span></div>}
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+        <Btn variant="outline" onClick={onCancel}>Annuler</Btn>
+        <Btn onClick={()=>onSave({...form,type:"work"})} disabled={!form.date||h<=0}>Enregistrer</Btn>
+      </div>
+    </Card>
+  );
+}
+
+// ── FORM ABSENCE ──────────────────────────────────────────────────────────────
+function AbsForm({initial,onSave,onCancel}){
+  const def={absType:"cp",dateStart:today(),dateEnd:today(),halfDay:"full",note:""};
+  const[form,setForm]=useState({...def,...(initial&&initial.absType?initial:{})});
+  const set=k=>v=>setForm(f=>({...f,[k]:v}));
+  const typ=at(form.absType);
+  const nb=form.halfDay==="half"?0.5:Math.max(1,daysBetween(form.dateStart,form.dateEnd||form.dateStart));
+  return(
+    <Card style={{marginBottom:"1rem",border:`2px solid ${typ.color}40`}}>
+      <h3 style={{fontSize:15,fontWeight:800,color:typ.color,margin:"0 0 1.25rem",display:"flex",alignItems:"center",gap:8}}>
+        <span style={{background:`${typ.color}15`,color:typ.color,width:28,height:28,borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,flexShrink:0}}>{typ.icon}</span>
+        {initial&&initial.absType?"Modifier l'absence":"Déclarer une absence"}
+      </h3>
+      <div style={{marginBottom:14}}>
+        <label style={{display:"block",fontSize:11,fontWeight:700,color:"#4A5568",marginBottom:8,letterSpacing:0.5,textTransform:"uppercase"}}>Type d'absence</label>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+          {ABS.map(a=>(
+            <button key={a.id} onClick={()=>set("absType")(a.id)} style={{background:form.absType===a.id?a.bg:"#F7F9FC",border:`2px solid ${form.absType===a.id?a.color:"#E2E8F0"}`,borderRadius:12,padding:"0.65rem 0.8rem",cursor:"pointer",display:"flex",alignItems:"center",gap:8,textAlign:"left",transition:"all 0.15s"}}>
+              <span style={{fontSize:17,flexShrink:0}}>{a.icon}</span>
+              <span style={{fontSize:11,fontWeight:700,color:form.absType===a.id?a.color:"#4A5568",lineHeight:1.3}}>{a.label}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+      <div style={{marginBottom:14}}>
+        <label style={{display:"block",fontSize:11,fontWeight:700,color:"#4A5568",marginBottom:8,letterSpacing:0.5,textTransform:"uppercase"}}>Durée</label>
+        <div style={{display:"flex",gap:8}}>
+          {[{v:"full",l:"Journée(s)"},{v:"half",l:"Demi-journée"}].map(o=>(
+            <button key={o.v} onClick={()=>set("halfDay")(o.v)} style={{flex:1,background:form.halfDay===o.v?NAVY:"#F7F9FC",color:form.halfDay===o.v?"#fff":"#4A5568",border:`1.5px solid ${form.halfDay===o.v?NAVY:"#E2E8F0"}`,borderRadius:10,padding:"0.6rem",fontSize:12,fontWeight:700,cursor:"pointer"}}>{o.l}</button>
+          ))}
+        </div>
+      </div>
+      {form.halfDay==="half"
+        ?<Inp label="Date" type="date" value={form.dateStart} onChange={e=>set("dateStart")(e.target.value)}/>
+        :<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+          <Inp label="Date début" type="date" value={form.dateStart} onChange={e=>set("dateStart")(e.target.value)}/>
+          <Inp label="Date fin" type="date" value={form.dateEnd||form.dateStart} onChange={e=>set("dateEnd")(e.target.value)}/>
+         </div>
+      }
+      <Inp label="Commentaire (optionnel)" value={form.note} onChange={e=>set("note")(e.target.value)} placeholder="Médecin, destination, motif…"/>
+      <div style={{background:typ.bg,border:`1.5px solid ${typ.color}30`,borderRadius:12,padding:"0.85rem 1rem",marginBottom:16,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <div style={{display:"flex",alignItems:"center",gap:8}}><span style={{fontSize:20}}>{typ.icon}</span><span style={{color:typ.color,fontWeight:700,fontSize:14}}>{typ.label}</span></div>
+        <span style={{color:typ.color,fontWeight:800,fontSize:20}}>{nb} jour{nb>1?"s":""}</span>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+        <Btn variant="outline" onClick={onCancel}>Annuler</Btn>
+        <Btn onClick={()=>onSave({...form,type:"absence",nbDays:nb})} disabled={!form.dateStart}>Enregistrer</Btn>
+      </div>
+    </Card>
+  );
+}
+
+// ── TABLEAU DE BORD SALARIÉ ───────────────────────────────────────────────────
+// ── PROFIL ÉDITABLE SALARIÉ (PIN + photo) ────────────────────────────────────
+function ProfileEdit({employee,onSave,onClose,onExport,ym}){
+  const[pin,setPin]=useState(employee.pin||"");
+  const[photo,setPhoto]=useState(employee.photo||"");
+  const[saving,setSaving]=useState(false);
+  const[err,setErr]=useState("");
+  const[saved,setSaved]=useState(false);
+
+  function handlePhoto(e){
+    const file=e.target.files[0];if(!file)return;
+    const reader=new FileReader();
+    reader.onload=ev=>{
+      const img=new Image();
+      img.onload=()=>{
+        const canvas=document.createElement("canvas");
+        const size=Math.min(img.width,img.height);
+        const sx=(img.width-size)/2,sy=(img.height-size)/2;
+        canvas.width=100;canvas.height=100;
+        canvas.getContext("2d").drawImage(img,sx,sy,size,size,0,0,100,100);
+        setPhoto(canvas.toDataURL("image/jpeg",0.5));
+        setSaved(false);
+      };
+      img.src=ev.target.result;
+    };
+    reader.readAsDataURL(file);
+  }
+
+  async function handleSave(){
+    if(!/^\d{4}$/.test(pin)){setErr("Le PIN doit faire exactement 4 chiffres.");return;}
+    if(typeof onCheckPin==="function"){
+      const conflict=onCheckPin(pin,employee.id);
+      if(conflict){setErr(`Ce PIN est déjà utilisé par ${conflict}.`);return;}
+    }
+    setSaving(true);setErr("");
+    await onSave({pin,photo});
+    setSaving(false);setSaved(true);
+    setTimeout(()=>setSaved(false),2500);
+  }
+
+  return(
+    <Card style={{marginBottom:"1.25rem",border:`1.5px solid ${NAVY}20`}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"1rem"}}>
+        <div style={{fontWeight:800,fontSize:15,color:NAVY}}>👤 Mon profil</div>
+        <button onClick={onClose} style={{background:"none",border:"none",color:"#A0AEC0",fontSize:20,cursor:"pointer",lineHeight:1}}>×</button>
+      </div>
+      <div style={{display:"flex",alignItems:"center",gap:16,marginBottom:"1rem"}}>
+        <div style={{position:"relative",flexShrink:0}}>
+          {photo
+            ?<div style={{width:72,height:72,borderRadius:"50%",overflow:"hidden",border:`3px solid ${NAVY}20`}}><img src={photo} style={{width:"100%",height:"100%",objectFit:"cover"}}/></div>
+            :<Avatar name={employee.name} size={72} bg={`${NAVY}15`} color={NAVY} fs={26}/>
+          }
+          <label style={{position:"absolute",bottom:0,right:0,width:24,height:24,background:MAG,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",border:"2px solid #fff"}}>
+            <span style={{color:"#fff",fontSize:12}}>✏</span>
+            <input type="file" accept="image/*" onChange={handlePhoto} style={{display:"none"}}/>
+          </label>
+        </div>
+        <div>
+          <div style={{fontWeight:800,fontSize:16,color:NAVY}}>{employee.name}</div>
+          {employee.contractType&&(()=>{const c=ct(employee.contractType);return<span style={{fontSize:12,background:c.bg,color:c.color,borderRadius:6,padding:"2px 10px",fontWeight:700,display:"inline-block",marginTop:4}}>{c.label}</span>;})()}
+          {employee.entryDate&&<div style={{fontSize:12,color:"#718096",marginTop:4}}>📅 Entrée : {fmtDate(employee.entryDate)}</div>}
+        </div>
+      </div>
+      <Inp label="Nouveau code PIN (4 chiffres)" type="password" maxLength={4} value={pin} onChange={e=>{setPin(e.target.value);setErr("");setSaved(false);}} placeholder="••••" xstyle={{fontSize:24,textAlign:"center",letterSpacing:10,fontWeight:700}}/>
+      {err&&<div style={{background:"#FFF5F5",border:"1.5px solid #FEB2B2",borderRadius:10,padding:"0.6rem 1rem",color:"#C53030",fontSize:13,marginBottom:10,fontWeight:600}}>⚠️ {err}</div>}
+      {saved&&<div style={{background:"#F0FFF4",border:"1.5px solid #9AE6B4",borderRadius:10,padding:"0.6rem 1rem",color:"#276749",fontSize:13,marginBottom:10,fontWeight:600}}>✅ Profil mis à jour !</div>}
+      <Btn onClick={handleSave} disabled={saving}>{saving?"Sauvegarde…":"💾 Enregistrer"}</Btn>
+      <button onClick={onExport} style={{width:"100%",marginTop:10,background:`linear-gradient(135deg,${NAVY},${NAVYLT})`,color:"#fff",border:"none",borderRadius:12,padding:"11px",fontSize:13,fontWeight:700,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
+        📥 Exporter toutes mes heures
+      </button>
+    </Card>
+  );
+}
+
+function EmpDash({employee,employees,onLogout,onEmpUpdate}){
+  const[entries,setEntries]=useState([]);
+  const[loading,setLoading]=useState(true);
+  const[saving,setSaving]=useState(false);
+  const[ym,setYm]=useState(getYM());
+  const[mode,setMode]=useState(null);
+  const[editEntry,setEditEntry]=useState(null);
+  const[filter,setFilter]=useState("all");
+  const[showProfile,setShowProfile]=useState(false);
+  const months=monthsSinceStart();
+  const key=`fp:${employee.id}:${ym}`;
+
+  function exportMyXLSX(){
+    function getMondayOf(ds){const d=new Date(ds);const day=d.getDay();const diff=day===0?-6:1-day;const m=new Date(d);m.setDate(d.getDate()+diff);return m.toISOString().slice(0,10);}
+    function getWeekNum(d){const dt=new Date(Date.UTC(d.getFullYear(),d.getMonth(),d.getDate()));const dn=dt.getUTCDay()||7;dt.setUTCDate(dt.getUTCDate()+4-dn);const y=new Date(Date.UTC(dt.getUTCFullYear(),0,1));return Math.ceil((((dt-y)/86400000)+1)/7);}
+    function fmtWeek(mon){const[y,m,d]=mon.split("-");const mo=new Date(Number(y),Number(m)-1,Number(d));const su=new Date(mo);su.setDate(mo.getDate()+6);const p=n=>String(n).padStart(2,"0");return`S${getWeekNum(mo)} — ${p(mo.getDate())}/${p(mo.getMonth()+1)} au ${p(su.getDate())}/${p(su.getMonth()+1)}/${su.getFullYear()}`;}
+    function fmtHL(h){const hh=Math.floor(Math.abs(h)),mm=Math.round((Math.abs(h)-hh)*60);return`${h<0?"-":""}${hh}h${String(mm).padStart(2,"0")}`;}
+
+    Promise.all(monthsSinceStart().map(m=>sg(`fp:${employee.id}:${m}`).then(d=>d||[]))).then(results=>{
+      const all=results.flat();
+      if(!all.length){alert("Aucune donnée à exporter.");return;}
+
+      const wm={};
+      all.forEach(e=>{
+        if(e.type==="absence"){
+          let c=new Date(e.dateStart);const en=new Date(e.dateEnd||e.dateStart);
+          while(c<=en){const ds=c.toISOString().slice(0,10);const mo=getMondayOf(ds);if(!wm[mo])wm[mo]={h:0,aj:0,ad:[]};wm[mo].aj+=e.halfDay==="half"?0.5:1;wm[mo].ad.push(at(e.absType).label);c.setDate(c.getDate()+1);}
+        } else {const mo=getMondayOf(e.date);if(!wm[mo])wm[mo]={h:0,aj:0,ad:[]};wm[mo].h+=calcH(e.startTime,e.endTime,e.breakMin);}
+      });
+      const mondays=Object.keys(wm).sort();
+      const contratInfo=ct(employee.contractType);
+
+      const sheet1=[
+        [`MES HEURES — ${employee.name.toUpperCase()}`,"","","","","",""],
+        [`Contrat : ${contratInfo.label||"—"}   |   Entrée : ${employee.entryDate?fmtDate(employee.entryDate):"—"}   |   Base : 35h/semaine`],
+        [""],
+        ["Semaine","Heures travaillées","Jours absence","Type(s) absence","Heures requises (35h)","Différence","Statut"],
+      ];
+      let tH=0,tR=0,tD=0;
+      mondays.forEach(mo=>{
+        const w=wm[mo];const h=w.h;const aj=w.aj;
+        const req=Math.max(0,35-(aj*7));const diff=h-req;
+        tH+=h;tR+=req;tD+=diff;
+        sheet1.push([fmtWeek(mo),fmtHL(h),aj>0?`${aj}j`:"",[ ...new Set(w.ad)].join(", ")||"",fmtHL(req),fmtHL(diff),diff>0?"✓ Excédent":diff===0?"✓ Exact":"⚠ Déficit"]);
+      });
+      sheet1.push(["TOTAL GÉNÉRAL",fmtHL(tH),"","",fmtHL(tR),fmtHL(tD),tD>=0?"✓ Excédent":"⚠ Déficit"]);
+
+      const sheet2=[
+        [`DÉTAIL JOURNALIER — ${employee.name.toUpperCase()}`],
+        [""],
+        ["Date","Jour","Type","Heure début","Heure fin","Pause (min)","Heures effectives","Chantier / Note","Type absence","Jours abs."],
+      ];
+      all.slice().sort((a,b)=>(a.date||a.dateStart).localeCompare(b.date||b.dateStart)).forEach(e=>{
+        const isA=e.type==="absence";
+        const ds=e.date||e.dateStart;const[y,m,d]=ds.split("-");
+        const jour=DAYS_FR[new Date(Number(y),Number(m)-1,Number(d)).getDay()];
+        if(isA){const typ=at(e.absType);const dr=e.dateEnd&&e.dateEnd!==e.dateStart?`${fmtDate(e.dateStart)} → ${fmtDate(e.dateEnd)}`:fmtDate(e.dateStart);sheet2.push([dr,jour,"Absence","","","","",e.note||"",typ.label,e.halfDay==="half"?"0.5":String(e.nbDays||1)]);}
+        else{sheet2.push([fmtDate(ds),jour,"Travail",e.startTime,e.endTime,e.breakMin||"0",fmtHL(calcH(e.startTime,e.endTime,e.breakMin)),e.note||"","",""]);}
+      });
+
+      const wb=XLSX.utils.book_new();
+      const ws1=XLSX.utils.aoa_to_sheet(sheet1);
+      const ws2=XLSX.utils.aoa_to_sheet(sheet2);
+      ws1["!cols"]=[{wch:36},{wch:20},{wch:13},{wch:28},{wch:22},{wch:14},{wch:14}];
+      ws2["!cols"]=[{wch:30},{wch:8},{wch:10},{wch:12},{wch:12},{wch:12},{wch:18},{wch:26},{wch:22},{wch:12}];
+      XLSX.utils.book_append_sheet(wb,ws1,"Synthèse hebdo");
+      XLSX.utils.book_append_sheet(wb,ws2,"Détail journalier");
+      XLSX.writeFile(wb,`mes_heures_${employee.name.replace(/ /g,"_")}.xlsx`);
+    });
+  }
+
+  useEffect(()=>{
+    setLoading(true);setMode(null);setEditEntry(null);
+    sg(key).then(d=>{setEntries(d||[]);setLoading(false);});
+  },[key]);
+
+  async function save(form){
+    setSaving(true);
+    const entry={...form,id:editEntry?.id||`e${Date.now()}`};
+    const next=editEntry?entries.map(e=>e.id===editEntry.id?entry:e):[...entries,entry].sort((a,b)=>(a.date||a.dateStart).localeCompare(b.date||b.dateStart));
+    setEntries(next);
+    await ss(key,next);
+    setSaving(false);setMode(null);setEditEntry(null);
+  }
+  async function del(id){
+    const next=entries.filter(e=>e.id!==id);
+    setEntries(next);
+    await ss(key,next);
+  }
+
+  const work=entries.filter(e=>e.type==="work"||!e.type);
+  const abs=entries.filter(e=>e.type==="absence");
+  const totalH=work.reduce((s,e)=>s+calcH(e.startTime,e.endTime,e.breakMin),0);
+  const totalAbsDays=abs.reduce((s,e)=>s+Number(e.nbDays||1),0);
+  const shown=filter==="work"?work:filter==="absence"?abs:entries;
+
+  return(
+    <div style={{minHeight:"100vh",background:"#F4F6FA",paddingBottom:"2rem"}}>
+      <div style={{background:`linear-gradient(135deg,${NAVYDK},${NAVYLT})`,paddingBottom:"3rem"}}>
+        <div style={{padding:"1rem 1.25rem",display:"flex",alignItems:"center",justifyContent:"space-between",maxWidth:460,margin:"0 auto"}}>
+          <div style={{display:"flex",alignItems:"center",gap:12}}>
+            {employee.photo
+              ?<div style={{width:40,height:40,borderRadius:"50%",overflow:"hidden",flexShrink:0,border:"2px solid rgba(255,255,255,0.4)"}}><img src={employee.photo} style={{width:"100%",height:"100%",objectFit:"cover"}}/></div>
+              :<Avatar name={employee.name} size={40} bg="rgba(255,255,255,0.2)" color="#fff" fs={14}/>
+            }
+            <div>
+              <div style={{color:"rgba(255,255,255,0.55)",fontSize:11,fontWeight:700,letterSpacing:1}}>BONJOUR</div>
+              <div style={{color:"#fff",fontWeight:800,fontSize:17}}>{employee.name}</div>
+            </div>
+          </div>
+          <div style={{display:"flex",gap:8}}>
+            <button onClick={()=>setShowProfile(p=>!p)} style={{background:"rgba(255,255,255,0.12)",border:"1px solid rgba(255,255,255,0.2)",borderRadius:10,padding:"7px 13px",color:"#fff",fontSize:12,cursor:"pointer",fontWeight:600}}>👤 Profil</button>
+            <button onClick={onLogout} style={{background:"rgba(255,255,255,0.12)",border:"1px solid rgba(255,255,255,0.2)",borderRadius:10,padding:"7px 13px",color:"#fff",fontSize:12,cursor:"pointer",fontWeight:600}}>Déconnexion</button>
+          </div>
+        </div>
+      </div>
+
+      <div style={{padding:"0 1.25rem",maxWidth:460,margin:"0 auto"}}>
+        {showProfile&&(
+          <ProfileEdit employee={employee} onSave={async(updates)=>{
+            const next=employees.map(e=>e.id===employee.id?{...e,...updates}:e);
+            await ss("fp:employees",next);
+            onEmpUpdate({...employee,...updates});
+          }} onCheckPin={(pin,id)=>{const dup=employees.find(e=>e.pin===pin&&e.id!==id);return dup?dup.name:null;}} onClose={()=>setShowProfile(false)} onExport={exportMyXLSX} ym={ym}/>
+        )}
+
+        <Card style={{marginTop:"-2rem",marginBottom:"1.25rem"}}>
+          <div style={{display:"flex",gap:10,marginBottom:"0.75rem"}}>
+            {[{v:fmtH(totalH),l:"HEURES",c:NAVY},{v:work.length,l:"JOURS TRAV.",c:MAG},{v:totalAbsDays,l:"JOURS ABS.",c:"#C53030"}].map(({v,l,c})=>(
+              <div key={l} style={{flex:1,textAlign:"center",padding:"0.8rem",background:`${c}10`,borderRadius:14}}>
+                <div style={{fontSize:19,fontWeight:800,color:c}}>{v}</div>
+                <div style={{fontSize:9,color:"#718096",marginTop:2,fontWeight:700,letterSpacing:0.3}}>{l}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{display:"flex",gap:8,overflowX:"auto",paddingBottom:2}}>
+            {months.map(m=>(
+              <button key={m} onClick={()=>{setYm(m);setFilter("all");}} style={{background:m===ym?NAVY:"transparent",color:m===ym?"#fff":"#718096",border:m===ym?"none":"1.5px solid #E2E8F0",borderRadius:9,padding:"5px 12px",fontSize:12,cursor:"pointer",whiteSpace:"nowrap",fontWeight:700,flexShrink:0}}>{fmtYM(m)}</button>
+            ))}
+          </div>
+        </Card>
+
+        {saving&&<div style={{background:`${NAVY}10`,border:`1px solid ${NAVY}20`,borderRadius:10,padding:"8px 14px",marginBottom:12,display:"flex",alignItems:"center",gap:8,fontSize:13,color:NAVY,fontWeight:600}}>
+          <div style={{width:14,height:14,border:`2px solid ${NAVY}30`,borderTop:`2px solid ${NAVY}`,borderRadius:"50%",animation:"spin 0.8s linear infinite",flexShrink:0}}/> Synchronisation en cours…
+          <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+        </div>}
+
+        {!mode&&!editEntry&&(
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:"1.25rem"}}>
+            <Btn onClick={()=>setMode("work")}>⏱ Heures</Btn>
+            <Btn onClick={()=>setMode("absence")} variant="green">📅 Absence</Btn>
+          </div>
+        )}
+
+        {mode==="work"&&<WorkForm onSave={save} onCancel={()=>setMode(null)}/>}
+        {mode==="absence"&&<AbsForm onSave={save} onCancel={()=>setMode(null)}/>}
+        {editEntry&&(editEntry.type==="absence"?<AbsForm initial={editEntry} onSave={save} onCancel={()=>setEditEntry(null)}/>:<WorkForm initial={editEntry} onSave={save} onCancel={()=>setEditEntry(null)}/>)}
+
+        {loading?<Spinner/>:(
+          <>
+            {entries.length>0&&!mode&&!editEntry&&(
+              <div style={{display:"flex",gap:6,marginBottom:14}}>
+                {[{v:"all",l:"Tout"},{v:"work",l:`⏱ ${work.length}`},{v:"absence",l:`📅 ${abs.length}`}].map(t=>(
+                  <button key={t.v} onClick={()=>setFilter(t.v)} style={{background:t.v===filter?NAVY:"#fff",color:t.v===filter?"#fff":"#718096",border:`1.5px solid ${t.v===filter?NAVY:"#E2E8F0"}`,borderRadius:9,padding:"5px 12px",fontSize:12,cursor:"pointer",fontWeight:700,flexShrink:0}}>{t.l}</button>
+                ))}
+              </div>
+            )}
+            {entries.length===0?(
+              <div style={{textAlign:"center",padding:"3rem 1rem"}}>
+                <div style={{fontSize:52,marginBottom:"1rem"}}>📋</div>
+                <p style={{color:"#A0AEC0",fontSize:15,fontWeight:600}}>Aucune entrée pour ce mois</p>
+                <p style={{color:"#CBD5E0",fontSize:13}}>Utilisez les boutons ci-dessus pour saisir</p>
+              </div>
+            ):(
+              <div style={{display:"flex",flexDirection:"column",gap:10}}>
+                {shown.map(entry=>{
+                  const isAbs=entry.type==="absence";
+                  const typ=isAbs?at(entry.absType):null;
+                  const h=isAbs?null:calcH(entry.startTime,entry.endTime,entry.breakMin);
+                  const accent=isAbs?typ.color:MAG;
+                  return(
+                    <div key={entry.id} style={{background:"#fff",borderRadius:16,padding:"1rem 1.25rem",boxShadow:"0 2px 10px rgba(0,0,0,0.05)",borderLeft:`4px solid ${accent}`,display:"flex",alignItems:"center",gap:12}}>
+                      {isAbs&&<span style={{fontSize:22,flexShrink:0}}>{typ.icon}</span>}
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:2,flexWrap:"wrap"}}>
+                          <span style={{fontWeight:800,fontSize:14,color:NAVY}}>{fmtDate(entry.date||entry.dateStart)}</span>
+                          {isAbs&&<Badge color={typ.color} bg={typ.bg}>{typ.label}</Badge>}
+                        </div>
+                        {isAbs?(
+                          <div style={{color:"#718096",fontSize:12}}>
+                            {entry.halfDay==="half"?"Demi-journée":(entry.dateEnd&&entry.dateEnd!==entry.dateStart?`→ ${fmtDate(entry.dateEnd)}`:"Journée entière")}
+                            {entry.note&&<div style={{marginTop:3,color:"#4A5568",fontStyle:"italic"}}>"{entry.note}"</div>}
+                          </div>
+                        ):(
+                          <>
+                            <div style={{color:"#718096",fontSize:13}}>{entry.startTime} → {entry.endTime}{Number(entry.breakMin)>0&&<span style={{color:"#A0AEC0"}}> · Pause {entry.breakMin}min</span>}</div>
+                            {entry.note&&<div style={{color:"#4A5568",fontSize:12,marginTop:3,background:"#F7F9FC",borderRadius:6,padding:"2px 8px",display:"inline-block"}}>📍 {entry.note}</div>}
+                          </>
+                        )}
+                      </div>
+                      <div style={{textAlign:"right",flexShrink:0}}>
+                        <div style={{fontWeight:800,fontSize:18,color:accent}}>{isAbs?`${entry.nbDays||1}j`:fmtH(h)}</div>
+                        <div style={{display:"flex",gap:5,marginTop:5,justifyContent:"flex-end"}}>
+                          <button onClick={()=>{setEditEntry(entry);setMode(null);}} style={{background:`${NAVY}10`,border:"none",borderRadius:7,padding:"4px 9px",fontSize:12,color:NAVY,cursor:"pointer"}}>✏</button>
+                          <button onClick={()=>{if(window.confirm("Supprimer cette entrée ?"))del(entry.id);}} style={{background:"#FFF5F5",border:"none",borderRadius:7,padding:"4px 9px",fontSize:12,color:"#C53030",cursor:"pointer"}}>🗑</button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+                <div style={{background:`linear-gradient(135deg,${NAVY},${NAVYLT})`,borderRadius:16,padding:"1rem 1.25rem",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                  <div>
+                    <div style={{color:"rgba(255,255,255,0.6)",fontSize:11,fontWeight:700,letterSpacing:0.5}}>TOTAL {fmtYM(ym).toUpperCase()}</div>
+                    {totalAbsDays>0&&<div style={{color:"rgba(255,255,255,0.45)",fontSize:11,marginTop:2}}>{totalAbsDays} j. absence</div>}
+                  </div>
+                  <div style={{color:"#fff",fontWeight:800,fontSize:22}}>{fmtH(totalH)}</div>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── LOGIN ADMIN ───────────────────────────────────────────────────────────────
+function AdminLogin({onLogin,onBack}){
+  const[pass,setPass]=useState("");
+  const[err,setErr]=useState("");
+  function doLogin(){if(pass===ADMIN_PASS)onLogin();else{setErr("Mot de passe incorrect.");setPass("");}}
+  return(
+    <div style={{minHeight:"100vh",background:`linear-gradient(155deg,${NAVYDK},${NAVYLT})`,display:"flex",alignItems:"center",justifyContent:"center",padding:"2rem"}}>
+      <div style={{background:"#fff",borderRadius:24,padding:"2rem",width:"100%",maxWidth:380,boxShadow:"0 24px 64px rgba(0,0,0,0.35)"}}>
+        <button onClick={onBack} style={{background:"none",border:"none",color:"#A0AEC0",fontSize:13,cursor:"pointer",padding:"0 0 1.5rem",display:"flex",alignItems:"center",gap:4,fontWeight:600}}>← Retour</button>
+        <div style={{textAlign:"center",marginBottom:"1.75rem"}}>
+          <div style={{width:60,height:60,borderRadius:18,background:`${NAVY}10`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:30,margin:"0 auto 1rem"}}>📊</div>
+          <h2 style={{fontWeight:800,fontSize:22,color:NAVY,margin:0}}>Back Office</h2>
+          <p style={{color:"#A0AEC0",fontSize:14,margin:"5px 0 0"}}>Accès administrateur Fermapro</p>
+        </div>
+        <Inp label="Mot de passe" type="password" value={pass} onChange={e=>{setPass(e.target.value);setErr("");}} onKeyDown={e=>e.key==="Enter"&&pass&&doLogin()} placeholder="Mot de passe administrateur"/>
+        {err&&<div style={{background:"#FFF5F5",border:"1.5px solid #FEB2B2",borderRadius:10,padding:"0.75rem 1rem",color:"#C53030",fontSize:13,marginBottom:14,fontWeight:600}}>⚠️ {err}</div>}
+        <Btn onClick={doLogin} disabled={!pass}>Accéder au back office</Btn>
+      </div>
+    </div>
+  );
+}
+
+// ── GESTION SALARIÉS ──────────────────────────────────────────────────────────
+function EmpManager({employees,onUpdate}){
+  const COLS=["#1E3A7B","#E8457A","#2F855A","#B7791F","#6B46C1","#C53030","#2B6CB0","#276749"];
+  const emptyForm={name:"",pin:"",contractType:"cdi",entryDate:"",photo:"",email:"",phone:""};
+  const[form,setForm]=useState(emptyForm);
+  const[editId,setEditId]=useState(null);
+  const[err,setErr]=useState("");
+  const[confirmDel,setConfirmDel]=useState(null);
+  const[toast,setToast]=useState("");
+  const[saving,setSaving]=useState(false);
+  const setF=k=>v=>setForm(f=>({...f,[k]:v}));
+  function showToast(msg){setToast(msg);setTimeout(()=>setToast(""),2800);}
+
+  function handlePhoto(e){
+    const file=e.target.files[0];if(!file)return;
+    const reader=new FileReader();
+    reader.onload=ev=>{
+      const img=new Image();
+      img.onload=()=>{
+        const canvas=document.createElement("canvas");
+        const size=Math.min(img.width,img.height);
+        const sx=(img.width-size)/2,sy=(img.height-size)/2;
+        canvas.width=100;canvas.height=100;
+        const ctx=canvas.getContext("2d");
+        ctx.drawImage(img,sx,sy,size,size,0,0,100,100);
+        setF("photo")(canvas.toDataURL("image/jpeg",0.50));
+      };
+      img.src=ev.target.result;
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function validate(){
+    if(!form.name.trim())return"Nom obligatoire.";
+    if(!/^\d{4}$/.test(form.pin))return"PIN doit faire 4 chiffres.";
+    const dup=employees.find(e=>e.pin===form.pin&&e.id!==editId);
+    if(dup)return`PIN déjà utilisé par ${dup.name}.`;
+    return"";
+  }
+  async function saveEmp(){
+    const e=validate();if(e){setErr(e);return;}
+    setSaving(true);
+    let next;
+    const data={name:form.name.trim(),pin:form.pin,contractType:form.contractType,entryDate:form.entryDate,photo:form.photo,email:form.email||'',phone:form.phone||''};
+    if(editId){next=employees.map(emp=>emp.id===editId?{...emp,...data}:emp);showToast("✓ Modifié et synchronisé");}
+    else{next=[...employees,{id:`emp_${Date.now()}`,...data}];showToast("✓ Ajouté et synchronisé");}
+    await ss("fp:employees",next);
+    onUpdate(next);setForm(emptyForm);setEditId(null);setErr("");setSaving(false);
+  }
+  async function delEmp(id){
+    const months=monthsSinceStart();
+    let hasData=false;
+    for(const m of months){
+      const d=await sg(`fp:${id}:${m}`);
+      if(d&&d.length>0){hasData=true;break;}
+    }
+    if(hasData){
+      const ok=window.confirm("⚠️ Ce salarié a des heures enregistrées. Supprimer quand même ?\n\nSes données d'heures resteront dans Google Sheets mais ne seront plus accessibles.");
+      if(!ok){setConfirmDel(null);return;}
+    }
+    const next=employees.filter(e=>e.id!==id);
+    await ss("fp:employees",next);
+    onUpdate(next);setConfirmDel(null);showToast("Supprimé");
+  }
+
+  return(
+    <div style={{position:"relative"}}>
+      {toast&&<div style={{position:"fixed",top:20,left:"50%",transform:"translateX(-50%)",background:NAVY,color:"#fff",borderRadius:12,padding:"10px 22px",fontSize:14,fontWeight:700,zIndex:999,boxShadow:"0 8px 24px rgba(0,0,0,0.2)",whiteSpace:"nowrap"}}>{toast}</div>}
+      {confirmDel&&(
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.45)",zIndex:998,display:"flex",alignItems:"center",justifyContent:"center",padding:"1.5rem"}}>
+          <div style={{background:"#fff",borderRadius:20,padding:"1.75rem",maxWidth:340,width:"100%"}}>
+            <div style={{fontSize:36,textAlign:"center",marginBottom:"1rem"}}>⚠️</div>
+            <h3 style={{fontWeight:800,textAlign:"center",margin:"0 0 0.5rem"}}>Supprimer ?</h3>
+            <p style={{color:"#718096",fontSize:14,textAlign:"center",margin:"0 0 1.5rem"}}><strong style={{color:NAVY}}>{employees.find(e=>e.id===confirmDel)?.name}</strong> sera supprimé(e).</p>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}><Btn variant="outline" onClick={()=>setConfirmDel(null)}>Annuler</Btn><Btn variant="danger" onClick={()=>delEmp(confirmDel)}>Supprimer</Btn></div>
+          </div>
+        </div>
+      )}
+
+      <Card style={{marginBottom:"1.25rem",border:`2px solid ${editId?MAG+"40":NAVY+"15"}`}}>
+        <h3 style={{fontWeight:800,color:editId?MAG:NAVY,fontSize:15,margin:"0 0 1.25rem",display:"flex",alignItems:"center",gap:8}}>
+          <span style={{background:editId?`${MAG}15`:`${NAVY}12`,color:editId?MAG:NAVY,width:28,height:28,borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,flexShrink:0}}>{editId?"✏":"+"}</span>
+          {editId?`Modifier — ${employees.find(e=>e.id===editId)?.name}`:"Ajouter un salarié"}
+        </h3>
+
+        <div style={{display:"flex",alignItems:"center",gap:16,marginBottom:16}}>
+          <div style={{width:72,height:72,borderRadius:"50%",overflow:"hidden",background:`${NAVY}10`,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",border:`2px dashed ${NAVY}30`}}>
+            {form.photo?<img src={form.photo} style={{width:"100%",height:"100%",objectFit:"cover"}}/>:<span style={{fontSize:30}}>📷</span>}
+          </div>
+          <div style={{flex:1}}>
+            <label style={{display:"block",fontSize:11,fontWeight:700,color:"#4A5568",marginBottom:6,letterSpacing:0.5,textTransform:"uppercase"}}>Photo d'identité</label>
+            <label style={{display:"inline-flex",alignItems:"center",gap:8,background:`${NAVY}10`,color:NAVY,borderRadius:10,padding:"7px 14px",fontSize:12,fontWeight:700,cursor:"pointer",border:`1.5px solid ${NAVY}20`}}>
+              📁 Choisir une photo
+              <input type="file" accept="image/*" onChange={handlePhoto} style={{display:"none"}}/>
+            </label>
+            {form.photo&&<button onClick={()=>setF("photo")("")} style={{marginLeft:8,background:"#FFF5F5",color:"#C53030",border:"none",borderRadius:8,padding:"7px 10px",fontSize:11,fontWeight:700,cursor:"pointer"}}>✕ Retirer</button>}
+          </div>
+        </div>
+
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+          <Inp label="Nom complet" value={form.name} onChange={e=>{setF("name")(e.target.value);setErr("");}} placeholder="Prénom Nom"/>
+          <Inp label="Code PIN (4 chiffres)" type="text" inputMode="numeric" maxLength={4} value={form.pin} onChange={e=>{setF("pin")(e.target.value.replace(/\D/,""));setErr("");}} placeholder="1234" xstyle={{letterSpacing:8,fontWeight:700}}/>
+        </div>
+
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+          <div style={{marginBottom:14}}>
+            <label style={{display:"block",fontSize:11,fontWeight:700,color:"#4A5568",marginBottom:5,letterSpacing:0.5,textTransform:"uppercase"}}>Type de contrat</label>
+            <select value={form.contractType} onChange={e=>setF("contractType")(e.target.value)}
+              style={{width:"100%",padding:"0.75rem 1rem",borderRadius:10,border:"1.5px solid #E2E8F0",fontSize:14,outline:"none",background:"#fff",color:"#1A202C"}}>
+              {CONTRATS.map(c=><option key={c.id} value={c.id}>{c.label}</option>)}
+            </select>
+          </div>
+          <Inp label="Date d'entrée" type="date" value={form.entryDate} onChange={e=>setF("entryDate")(e.target.value)}/>
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+          <Inp label="Adresse email" type="email" value={form.email||""} onChange={e=>{setF("email")(e.target.value);}} placeholder="prenom@exemple.fr"/>
+          <Inp label="Téléphone portable" type="tel" value={form.phone||""} onChange={e=>{setF("phone")(e.target.value);}} placeholder="06 12 34 56 78"/>
+        </div>
+
+        {err&&<div style={{background:"#FFF5F5",border:"1.5px solid #FEB2B2",borderRadius:10,padding:"0.7rem 1rem",color:"#C53030",fontSize:13,marginBottom:14,fontWeight:600}}>⚠️ {err}</div>}
+        <div style={{display:"grid",gridTemplateColumns:editId?"1fr 1fr":"1fr",gap:10}}>
+          {editId&&<Btn variant="outline" onClick={()=>{setEditId(null);setForm(emptyForm);setErr("");}}>Annuler</Btn>}
+          <Btn onClick={saveEmp} disabled={!form.name||form.pin.length!==4||saving}>{saving?"Synchronisation…":(editId?"✓ Enregistrer":"+ Ajouter")}</Btn>
+        </div>
+      </Card>
+
+      {(()=>{
+        const[showArchived,setShowArchived]=React.useState(false);
+        const active=employees.filter(e=>!e.archived);
+        const archived=employees.filter(e=>e.archived);
+        const list=showArchived?archived:active;
+
+        async function toggleArchive(id){
+          const emp=employees.find(e=>e.id===id);
+          const label=emp.archived?"Réactiver":"Archiver";
+          if(!window.confirm(`${label} ${emp.name} ?${!emp.archived?"\n\nIl/elle n'apparaîtra plus sur la page de connexion.":""}`))return;
+          const next=employees.map(e=>e.id===id?{...e,archived:!e.archived}:e);
+          await ss("fp:employees",next);
+          onUpdate(next);
+          showToast(emp.archived?"✓ Salarié réactivé":"✓ Salarié archivé");
+        }
+
+        return(
+          <Card style={{padding:0,overflow:"hidden"}}>
+            <div style={{padding:"1rem 1.5rem",borderBottom:"1px solid #EDF2F7",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
+              <span style={{fontWeight:800,color:NAVY,fontSize:15}}>Base salariée</span>
+              <div style={{display:"flex",gap:6}}>
+                <button onClick={()=>setShowArchived(false)} style={{background:!showArchived?NAVY:"transparent",color:!showArchived?"#fff":"#718096",border:`1.5px solid ${!showArchived?NAVY:"#E2E8F0"}`,borderRadius:8,padding:"4px 12px",fontSize:12,fontWeight:700,cursor:"pointer"}}>
+                  Actifs ({active.length})
+                </button>
+                <button onClick={()=>setShowArchived(true)} style={{background:showArchived?"#718096":"transparent",color:showArchived?"#fff":"#718096",border:`1.5px solid ${showArchived?"#718096":"#E2E8F0"}`,borderRadius:8,padding:"4px 12px",fontSize:12,fontWeight:700,cursor:"pointer"}}>
+                  Archivés ({archived.length})
+                </button>
+              </div>
+            </div>
+            {list.length===0
+              ?<div style={{textAlign:"center",padding:"2rem",color:"#A0AEC0"}}><div style={{fontSize:36}}>{showArchived?"📦":"👥"}</div><p style={{margin:"0.5rem 0 0",fontSize:13}}>{showArchived?"Aucun salarié archivé":"Aucun salarié actif"}</p></div>
+              :list.map((emp,i)=>{
+                const bg=COLS[i%COLS.length];const isE=editId===emp.id;const contrat=ct(emp.contractType);
+                return(
+                  <div key={emp.id} style={{padding:"0.9rem 1.5rem",borderBottom:i<list.length-1?"1px solid #EDF2F7":"none",display:"flex",alignItems:"center",gap:14,background:isE?`${MAG}06`:emp.archived?"#FAFAFA":"transparent",borderLeft:isE?`3px solid ${MAG}`:emp.archived?"3px solid #E2E8F0":"3px solid transparent",opacity:emp.archived?0.7:1}}>
+                    {emp.photo
+                      ?<div style={{width:44,height:44,borderRadius:"50%",overflow:"hidden",flexShrink:0,border:`2px solid ${bg}30`,filter:emp.archived?"grayscale(1)":"none"}}><img src={emp.photo} style={{width:"100%",height:"100%",objectFit:"cover"}}/></div>
+                      :<Avatar name={emp.name} size={44} bg={`${bg}18`} color={bg}/>
+                    }
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontWeight:700,color:emp.archived?"#718096":"#1A202C",fontSize:15}}>{emp.name}{emp.archived&&<span style={{fontSize:10,background:"#EDF2F7",color:"#718096",borderRadius:4,padding:"1px 6px",marginLeft:6,fontWeight:700}}>ARCHIVÉ</span>}</div>
+                      <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:3}}>
+                        {emp.contractType&&<span style={{fontSize:11,background:contrat.bg,color:contrat.color,borderRadius:5,padding:"1px 8px",fontWeight:700}}>{contrat.label}</span>}
+                        {emp.entryDate&&<span style={{fontSize:11,background:"#EDF2F7",color:"#4A5568",borderRadius:5,padding:"1px 8px",fontWeight:600}}>📅 {fmtDate(emp.entryDate)}</span>}
+                        {emp.email&&<span style={{fontSize:11,background:"#EBF8FF",color:"#2B6CB0",borderRadius:5,padding:"1px 8px",fontWeight:600}}>✉ {emp.email}</span>}
+                        {emp.phone&&<span style={{fontSize:11,background:"#F0FFF4",color:"#276749",borderRadius:5,padding:"1px 8px",fontWeight:600}}>📱 {emp.phone}</span>}
+                        <span style={{fontSize:11,background:"#EDF2F7",color:"#4A5568",borderRadius:5,padding:"1px 8px",fontWeight:700,letterSpacing:2}}>PIN ••••</span>
+                      </div>
+                    </div>
+                    <div style={{display:"flex",gap:6}}>
+                      {!emp.archived&&<button onClick={()=>{setEditId(emp.id);setForm({name:emp.name,pin:emp.pin,contractType:emp.contractType||"cdi",entryDate:emp.entryDate||"",photo:emp.photo||"",email:emp.email||"",phone:emp.phone||""});setErr("");}} style={{background:isE?`${MAG}15`:`${NAVY}10`,border:"none",borderRadius:9,padding:"6px 12px",fontSize:12,color:isE?MAG:NAVY,cursor:"pointer",fontWeight:700}}>✏</button>}
+                      <button onClick={()=>toggleArchive(emp.id)} title={emp.archived?"Réactiver":"Archiver"} style={{background:emp.archived?"#F0FFF4":"#FFFAF0",border:"none",borderRadius:9,padding:"6px 10px",fontSize:13,cursor:"pointer"}}>
+                        {emp.archived?"♻️":"📦"}
+                      </button>
+                      <button onClick={()=>setConfirmDel(emp.id)} style={{background:"#FFF5F5",border:"none",borderRadius:9,padding:"6px 10px",fontSize:12,color:"#C53030",cursor:"pointer"}}>🗑</button>
+                    </div>
+                  </div>
+                );
+              })
+            }
+          </Card>
+        );
+      })()}
+    </div>
+  );
+}
+
+// ── PANEL MESSAGES (SMS + Email via SpotHit) ──────────────────────────────────
+function MessagesPanel({employees}){
+  const actifs=employees.filter(e=>!e.archived);
+  const[channel,setChannel]=useState("sms");
+  const[selected,setSelected]=useState([]);
+  const[message,setMessage]=useState("");
+  const[subject,setSubject]=useState("");
+  const[sending,setSending]=useState(false);
+  const[result,setResult]=useState(null);
+
+  function toggleAll(){
+    const eligible=actifs.filter(e=>channel==="sms"?e.phone:e.email);
+    if(selected.length===eligible.length)setSelected([]);
+    else setSelected(eligible.map(e=>e.id));
+  }
+  function toggleEmp(id){setSelected(s=>s.includes(id)?s.filter(x=>x!==id):[...s,id]);}
+
+  const eligible=actifs.filter(e=>channel==="sms"?e.phone:e.email);
+  const missing=actifs.filter(e=>channel==="sms"?!e.phone:!e.email);
+
+  async function handleSend(){
+    if(!selected.length){alert("Sélectionnez au moins un destinataire.");return;}
+    if(!message.trim()){alert("Écrivez un message.");return;}
+    if(channel==="email"&&!subject.trim()){alert("Ajoutez un objet.");return;}
+    setSending(true);setResult(null);
+    try{
+      const recipients=selected.map(id=>{
+        const emp=actifs.find(e=>e.id===id);
+        return{name:emp.name,value:channel==="sms"?emp.phone:emp.email};
+      });
+      const r=await fetch(SCRIPT_URL,{
+        method:"POST",
+        headers:{"Content-Type":"text/plain"},
+        body:JSON.stringify({secret:SECRET,action:"send_message",channel,recipients,message:message.trim(),subject:subject.trim()}),
+        redirect:"follow"
+      });
+      const j=await r.json();
+      setResult(j);
+      if(j.ok){setMessage("");setSubject("");setSelected([]);}
+    }catch(e){setResult({ok:false,error:e.message});}
+    setSending(false);
+  }
+
+  return(
+    <div style={{maxWidth:700,margin:"0 auto"}}>
+      <Card style={{marginBottom:"1.25rem"}}>
+        <div style={{fontWeight:800,color:NAVY,fontSize:15,marginBottom:"1rem"}}>💬 Envoyer un message</div>
+        <div style={{display:"flex",gap:10,marginBottom:"1.25rem"}}>
+          {[{id:"sms",icon:"📱",label:"SMS"},{id:"email",icon:"✉️",label:"Email"}].map(c=>(
+            <button key={c.id} onClick={()=>{setChannel(c.id);setSelected([]);setResult(null);}}
+              style={{flex:1,padding:"0.75rem",borderRadius:12,border:`2px solid ${channel===c.id?NAVY:"#E2E8F0"}`,background:channel===c.id?`${NAVY}08`:"#fff",fontWeight:700,fontSize:14,cursor:"pointer",color:channel===c.id?NAVY:"#718096",display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
+              <span>{c.icon}</span>{c.label}
+            </button>
+          ))}
+        </div>
+
+        <div style={{marginBottom:"1.25rem"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+            <label style={{fontSize:11,fontWeight:700,color:"#4A5568",letterSpacing:0.5,textTransform:"uppercase"}}>Destinataires</label>
+            {eligible.length>0&&<button onClick={toggleAll} style={{background:"none",border:"none",color:NAVY,fontSize:12,fontWeight:700,cursor:"pointer"}}>
+              {selected.length===eligible.length?"Tout désélectionner":"Tout sélectionner"}
+            </button>}
+          </div>
+          {eligible.length===0?(
+            <div style={{background:"#FFF5F5",border:"1.5px solid #FEB2B2",borderRadius:10,padding:"0.75rem 1rem",color:"#C53030",fontSize:13,fontWeight:600}}>
+              ⚠️ Aucun salarié n'a de {channel==="sms"?"numéro de téléphone":"adresse email"} renseigné.
+            </div>
+          ):(
+            <div style={{display:"flex",flexDirection:"column",gap:6}}>
+              {eligible.map(emp=>(
+                <label key={emp.id} style={{display:"flex",alignItems:"center",gap:12,padding:"0.65rem 1rem",background:selected.includes(emp.id)?`${NAVY}08`:"#F7F9FC",borderRadius:10,border:`1.5px solid ${selected.includes(emp.id)?NAVY+"30":"transparent"}`,cursor:"pointer"}}>
+                  <input type="checkbox" checked={selected.includes(emp.id)} onChange={()=>toggleEmp(emp.id)} style={{width:16,height:16,accentColor:NAVY}}/>
+                  {emp.photo?<div style={{width:32,height:32,borderRadius:"50%",overflow:"hidden",flexShrink:0}}><img src={emp.photo} style={{width:"100%",height:"100%",objectFit:"cover"}}/></div>:<Avatar name={emp.name} size={32} fs={11}/>}
+                  <div style={{flex:1}}>
+                    <div style={{fontWeight:700,fontSize:13,color:NAVY}}>{emp.name}</div>
+                    <div style={{fontSize:11,color:"#718096"}}>{channel==="sms"?emp.phone:emp.email}</div>
+                  </div>
+                </label>
+              ))}
+            </div>
+          )}
+          {missing.length>0&&(
+            <div style={{marginTop:8,fontSize:11,color:"#A0AEC0"}}>
+              Sans {channel==="sms"?"téléphone":"email"} : {missing.map(e=>e.name).join(", ")}
+            </div>
+          )}
+        </div>
+
+        {channel==="email"&&(
+          <Inp label="Objet" value={subject} onChange={e=>setSubject(e.target.value)} placeholder="Ex: Planning semaine du 24 mars"/>
+        )}
+
+        <div style={{marginBottom:14}}>
+          <div style={{display:"flex",justifyContent:"space-between",marginBottom:5}}>
+            <label style={{fontSize:11,fontWeight:700,color:"#4A5568",letterSpacing:0.5,textTransform:"uppercase"}}>Message</label>
+            {channel==="sms"&&<span style={{fontSize:11,color:message.length>160?"#C53030":"#A0AEC0",fontWeight:600}}>{message.length}/160</span>}
+          </div>
+          <textarea value={message} onChange={e=>setMessage(e.target.value)}
+            placeholder={channel==="sms"?"Votre SMS (160 caractères max)…":"Contenu de l'email…"}
+            style={{width:"100%",padding:"0.75rem 1rem",borderRadius:10,border:"1.5px solid #E2E8F0",fontSize:14,outline:"none",resize:"vertical",minHeight:channel==="email"?120:80,boxSizing:"border-box",fontFamily:"inherit",color:"#1A202C"}}/>
+        </div>
+
+        {result&&(
+          <div style={{background:result.ok?"#F0FFF4":"#FFF5F5",border:`1.5px solid ${result.ok?"#9AE6B4":"#FEB2B2"}`,borderRadius:10,padding:"0.75rem 1rem",fontSize:13,fontWeight:600,color:result.ok?"#276749":"#C53030",marginBottom:14}}>
+            {result.ok?`✅ ${result.sent} message(s) envoyé(s) avec succès !`:`❌ Erreur : ${result.error||"Envoi échoué"}`}
+          </div>
+        )}
+
+        <Btn onClick={handleSend} disabled={sending||!selected.length||!message.trim()||eligible.length===0}>
+          {sending?"Envoi en cours…":`${channel==="sms"?"📱 Envoyer SMS":"✉️ Envoyer Email"} — ${selected.length} destinataire${selected.length>1?"s":""}`}
+        </Btn>
+
+        <div style={{marginTop:12,fontSize:11,color:"#A0AEC0",textAlign:"center"}}>
+          {channel==="sms"?<>Envoi via <strong>SpotHit</strong> · Configurez votre clé API dans Apps Script</>:<>Envoi via <strong>Google MailApp</strong> · lié à votre compte Google</>}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+// ── BACK OFFICE ADMIN ─────────────────────────────────────────────────────────
+function AdminDash({employees:initEmp,onLogout,onEmpChange}){
+  const[employees,setEmployees]=useState(initEmp);
+  const[tab,setTab]=useState("heures");
+  const[ym,setYm]=useState(getYM());
+  const[allData,setAllData]=useState({});
+  const[loading,setLoading]=useState(false);
+  const[detailId,setDetailId]=useState(null);
+  const[detailTab,setDetailTab]=useState("all");
+  const months=monthsSinceStart();
+
+  function handleUpdate(next){setEmployees(next);onEmpChange(next);}
+
+  async function restoreEmployees(){
+    try{
+      const fromSheets = await sg("fp:employees");
+      const fromLocal = lsg("fp:employees");
+      const best = (fromSheets&&fromSheets.length>0) ? fromSheets : (fromLocal&&fromLocal.length>0) ? fromLocal : null;
+      if(best){
+        setEmployees(best);
+        onEmpChange(best);
+        lss("fp:employees", best);
+        ss("fp:employees", best);
+        alert(`✅ ${best.length} salarié(s) restauré(s).`);
+      } else {
+        alert("⚠️ Aucune donnée trouvée dans Google Sheets ni en local.");
+      }
+    }catch(e){alert("❌ Erreur restauration : "+e.message);}
+  }
+
+  useEffect(()=>{
+    if(tab!=="heures")return;
+    setLoading(true);setDetailId(null);
+    Promise.all(employees.map(emp=>sg(`fp:${emp.id}:${ym}`).then(d=>({id:emp.id,data:d||[]}))))
+      .then(res=>{const map={};res.forEach(r=>{map[r.id]=r.data;});setAllData(map);setLoading(false);});
+  },[ym,tab,employees]);
+
+  function eWork(id){return(allData[id]||[]).filter(e=>e.type==="work"||!e.type);}
+  function eAbs(id){return(allData[id]||[]).filter(e=>e.type==="absence");}
+  function eTotH(id){return eWork(id).reduce((s,e)=>s+calcH(e.startTime,e.endTime,e.breakMin),0);}
+  function eTotAbs(id){return eAbs(id).reduce((s,e)=>s+Number(e.nbDays||1),0);}
+
+  const grandH=employees.reduce((s,e)=>s+eTotH(e.id),0);
+  const grandAbs=employees.reduce((s,e)=>s+eTotAbs(e.id),0);
+  const active=employees.filter(e=>(allData[e.id]||[]).length>0).length;
+
+  const BACKUP_KEY = "fp:last_backup_date";
+
+  async function backupAll(silent=false){
+    const backup={version:1,date:new Date().toISOString(),employees,heures:{}};
+    const months=monthsSinceStart();
+    for(const emp of employees){
+      backup.heures[emp.id]={};
+      for(const m of months){
+        const d=await sg(`fp:${emp.id}:${m}`);
+        if(d&&d.length>0) backup.heures[emp.id][m]=d;
+      }
+    }
+    const dateStr=new Date().toISOString().slice(0,10);
+
+    if(GS_READY){
+      fetch(SCRIPT_URL,{
+        method:"POST",
+        headers:{"Content-Type":"text/plain"},
+        body:JSON.stringify({secret:SECRET,action:"full_backup",backup}),
+        redirect:"follow"
+      }).then(()=>console.log("✅ Sauvegarde envoyée à Google Sheets"))
+        .catch(e=>console.warn("Sauvegarde Sheets échouée:",e));
+    }
+
+    if(!silent){
+      const json=JSON.stringify(backup,null,2);
+      const a=document.createElement("a");
+      a.href=URL.createObjectURL(new Blob([json],{type:"application/json"}));
+      a.download=`fermapro_backup_${dateStr}.json`;
+      a.click();
+      alert(`✅ Sauvegarde complète !\n\n• Fichier JSON téléchargé\n• Envoyée vers Google Sheets${GS_READY?"":" (non configuré)"}\n\nConservez le fichier JSON précieusement.`);
+    } else {
+      console.log("✅ Sauvegarde automatique effectuée :", dateStr);
+    }
+    lss(BACKUP_KEY, dateStr);
+  }
+
+  useEffect(()=>{
+    const _now=new Date();
+    const today=`${_now.getFullYear()}-${String(_now.getMonth()+1).padStart(2,"0")}-${String(_now.getDate()).padStart(2,"0")}`;
+    const lastBackup = lsg(BACKUP_KEY);
+    const h = new Date().getHours();
+    if(lastBackup !== today && h >= 22){
+      console.log("Sauvegarde automatique déclenchée (22h dépassées)");
+      setTimeout(()=>backupAll(true), 3000);
+    }
+    const timer = setInterval(()=>{
+      const now = new Date();
+      const todayNow=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}-${String(now.getDate()).padStart(2,"0")}`;
+      const lastB = lsg(BACKUP_KEY);
+      if(now.getHours()===22 && now.getMinutes()===0 && lastB !== todayNow){
+        console.log("Sauvegarde automatique 22h00");
+        backupAll(true);
+      }
+    }, 60000);
+    return ()=>clearInterval(timer);
+  },[employees]);
+
+  const[showBackupList,setShowBackupList]=useState(false);
+  const[backupList,setBackupList]=useState([]);
+  const[backupLoading,setBackupLoading]=useState(false);
+
+  async function loadBackupList(){
+    if(!GS_READY){alert("Configurez d'abord l'URL Apps Script.");return;}
+    setBackupLoading(true);
+    try{
+      const url=`${SCRIPT_URL}?secret=${SECRET}&action=get_backups`;
+      const r=await fetch(url,{redirect:"follow"});
+      const j=await r.json();
+      if(j.ok) setBackupList(j.data||[]);
+      else alert("Erreur: "+j.error);
+    }catch(e){alert("Erreur chargement sauvegardes: "+e.message);}
+    setBackupLoading(false);
+  }
+
+  async function restoreFromFirebaseBackup(date){
+    if(!window.confirm(`Restaurer la sauvegarde du ${date} ?\n\nToutes les données actuelles seront remplacées.`))return;
+    try{
+      const url=`${SCRIPT_URL}?secret=${SECRET}&action=restore&date=${date}`;
+      const r=await fetch(url,{redirect:"follow"});
+      const j=await r.json();
+      if(!j.ok){alert("❌ Erreur: "+j.error);return;}
+      const result=j.data;
+      const empData=await sg("fp:employees");
+      if(empData&&empData.length>0){
+        setEmployees(empData);
+        onEmpChange(empData);
+        lss("fp:employees",empData);
+      }
+      alert(`✅ Restauration réussie !\n${result.employees} salariés et ${result.months} mois de données restaurés.`);
+      setShowBackupList(false);
+      setTab("heures");
+    }catch(err){alert("❌ Erreur restauration: "+err.message);}
+  }
+
+  async function restoreFromBackup(e){
+    const file=e.target.files[0];
+    if(!file)return;
+    const text=await file.text();
+    try{
+      const backup=JSON.parse(text);
+      if(!backup.employees||!backup.heures) throw new Error("Format invalide");
+      await ss("fp:employees",backup.employees);
+      setEmployees(backup.employees);
+      onEmpChange(backup.employees);
+      let count=0;
+      for(const empId of Object.keys(backup.heures)){
+        for(const m of Object.keys(backup.heures[empId])){
+          await ss(`fp:${empId}:${m}`,backup.heures[empId][m]);
+          count++;
+        }
+      }
+      alert(`✅ Restauration réussie !\n${backup.employees.length} salariés et ${count} mois de données restaurés.\n\nDate de la sauvegarde : ${backup.date?.slice(0,10)||"inconnue"}`);
+    }catch(err){
+      alert("❌ Fichier invalide : "+err.message);
+    }
+    e.target.value="";
+  }
+
+  function exportCSV(){
+    function getMondayOf(dateStr){
+      const d=new Date(dateStr);const day=d.getDay();
+      const diff=day===0?-6:1-day;
+      const mon=new Date(d);mon.setDate(d.getDate()+diff);
+      return mon.toISOString().slice(0,10);
+    }
+    function getWeekNum(d){
+      const date=new Date(Date.UTC(d.getFullYear(),d.getMonth(),d.getDate()));
+      const dayNum=date.getUTCDay()||7;date.setUTCDate(date.getUTCDate()+4-dayNum);
+      const yearStart=new Date(Date.UTC(date.getUTCFullYear(),0,1));
+      return Math.ceil((((date-yearStart)/86400000)+1)/7);
+    }
+    function fmtWeek(mondayStr){
+      const[y,m,d]=mondayStr.split("-");
+      const mon=new Date(Number(y),Number(m)-1,Number(d));
+      const sun=new Date(mon);sun.setDate(mon.getDate()+6);
+      const dd=n=>String(n).padStart(2,"0");
+      return`S${getWeekNum(mon)} — ${dd(mon.getDate())}/${dd(mon.getMonth()+1)} au ${dd(sun.getDate())}/${dd(sun.getMonth()+1)}/${sun.getFullYear()}`;
+    }
+    function fmtHlabel(h){
+      const hh=Math.floor(Math.abs(h)),mm=Math.round((Math.abs(h)-hh)*60);
+      return`${h<0?"-":""}${hh}h${String(mm).padStart(2,"0")}`;
+    }
+
+    const byEmpWeek={};
+    employees.forEach(emp=>{byEmpWeek[emp.id]={};});
+    employees.forEach(emp=>{
+      (allData[emp.id]||[]).forEach(e=>{
+        if(e.type==="absence"){
+          let cur=new Date(e.dateStart);const end=new Date(e.dateEnd||e.dateStart);
+          while(cur<=end){
+            const ds=cur.toISOString().slice(0,10);const mon=getMondayOf(ds);
+            if(!byEmpWeek[emp.id][mon])byEmpWeek[emp.id][mon]={heures:0,absJours:0,absDetail:[]};
+            byEmpWeek[emp.id][mon].absJours+=e.halfDay==="half"?0.5:1;
+            byEmpWeek[emp.id][mon].absDetail.push(at(e.absType).label);
+            cur.setDate(cur.getDate()+1);
+          }
+        } else {
+          const mon=getMondayOf(e.date);
+          if(!byEmpWeek[emp.id][mon])byEmpWeek[emp.id][mon]={heures:0,absJours:0,absDetail:[]};
+          byEmpWeek[emp.id][mon].heures+=calcH(e.startTime,e.endTime,e.breakMin);
+        }
+      });
+    });
+    const allMondays=[...new Set(employees.flatMap(emp=>Object.keys(byEmpWeek[emp.id])))].sort();
+
+    const sheet1=[
+      [`RAPPORT HEBDOMADAIRE — ${fmtYM(ym).toUpperCase()}   |   Base : 35h/semaine`,"","","","","","",""],
+      [""],
+      ["Salarié","Semaine","Heures travaillées","Jours absence","Type(s) absence","Heures requises (35h)","Différence","Statut"],
+    ];
+    employees.forEach(emp=>{
+      const weeks=byEmpWeek[emp.id];
+      const weekKeys=allMondays.filter(m=>weeks[m]);
+      if(weekKeys.length===0){
+        sheet1.push([emp.name,"(aucune saisie)","0h00","","","35h00","-35h00","⚠ Manquant"]);
+        return;
+      }
+      let totH=0,totReq=0,totDiff=0;
+      weekKeys.forEach(mon=>{
+        const w=weeks[mon];const h=w.heures;const absJ=w.absJours;
+        const req=Math.max(0,35-(absJ*7));const diff=h-req;
+        totH+=h;totReq+=req;totDiff+=diff;
+        sheet1.push([emp.name,fmtWeek(mon),fmtHlabel(h),absJ>0?`${absJ}j`:"",[ ...new Set(w.absDetail)].join(", ")||"",fmtHlabel(req),fmtHlabel(diff),diff>0?"✓ Excédent":diff===0?"✓ Exact":"⚠ Déficit"]);
+      });
+      sheet1.push([emp.name,`TOTAL ${fmtYM(ym).toUpperCase()}`,fmtHlabel(totH),"","",fmtHlabel(totReq),fmtHlabel(totDiff),totDiff>=0?"✓ Excédent":"⚠ Déficit"]);
+      sheet1.push([""]);
+    });
+
+    const sheet2=[
+      [`DÉTAIL JOURNALIER — ${fmtYM(ym).toUpperCase()}`,"","","","","",""],
+      [""],
+      ["Salarié","Date","Jour","Type","Heure début","Heure fin","Pause (min)","Heures effectives","Chantier / Note","Détail absence","Jours absence"],
+    ];
+    employees.forEach(emp=>{
+      const entries=(allData[emp.id]||[]).slice().sort((a,b)=>(a.date||a.dateStart).localeCompare(b.date||b.dateStart));
+      if(entries.length===0){
+        sheet2.push([emp.name,"(aucune saisie)","","","","","","","","",""]);
+        return;
+      }
+      entries.forEach(e=>{
+        const isAbs=e.type==="absence";
+        const dateStr=e.date||e.dateStart;
+        const[y,m,d]=dateStr.split("-");
+        const dt=new Date(Number(y),Number(m)-1,Number(d));
+        const jourLabel=DAYS_FR[dt.getDay()];
+        if(isAbs){
+          const typ=at(e.absType);
+          const dateRange=e.dateEnd&&e.dateEnd!==e.dateStart?`${fmtDate(e.dateStart)} → ${fmtDate(e.dateEnd)}`:fmtDate(e.dateStart);
+          sheet2.push([emp.name,dateRange,jourLabel,"Absence","","","","",e.note||"",typ.label,e.halfDay==="half"?"0.5":String(e.nbDays||1)]);
+        } else {
+          const h=calcH(e.startTime,e.endTime,e.breakMin);
+          sheet2.push([emp.name,fmtDate(dateStr),jourLabel,"Travail",e.startTime,e.endTime,e.breakMin||"0",fmtHlabel(h),e.note||"","",""]);
+        }
+      });
+      const totalH=(allData[emp.id]||[]).filter(e=>e.type==="work"||!e.type).reduce((s,e)=>s+calcH(e.startTime,e.endTime,e.breakMin),0);
+      const totalAbs=(allData[emp.id]||[]).filter(e=>e.type==="absence").reduce((s,e)=>s+Number(e.nbDays||1),0);
+      sheet2.push([emp.name,`TOTAL ${emp.name.toUpperCase()}`,""," ","","","",fmtHlabel(totalH),"","",totalAbs>0?`${totalAbs}j`:""]);
+      sheet2.push([""]);
+    });
+
+    const wb=XLSX.utils.book_new();
+    const ws1=XLSX.utils.aoa_to_sheet(sheet1);
+    const ws2=XLSX.utils.aoa_to_sheet(sheet2);
+    ws1["!cols"]=[{wch:22},{wch:36},{wch:20},{wch:14},{wch:28},{wch:22},{wch:14},{wch:14}];
+    ws2["!cols"]=[{wch:22},{wch:32},{wch:8},{wch:10},{wch:12},{wch:12},{wch:12},{wch:18},{wch:28},{wch:22},{wch:14}];
+    XLSX.utils.book_append_sheet(wb,ws1,"Synthèse hebdo");
+    XLSX.utils.book_append_sheet(wb,ws2,"Détail journalier");
+    XLSX.writeFile(wb,`fermapro_${ym}.xlsx`);
+  }
+
+  const dEmp=detailId?employees.find(e=>e.id===detailId):null;
+  const dAll=detailId?(allData[detailId]||[]):[];
+  const dWork=dAll.filter(e=>e.type==="work"||!e.type);
+  const dAbs=dAll.filter(e=>e.type==="absence");
+  const dH=detailId?eTotH(detailId):0;
+  const dAbsDays=detailId?eTotAbs(detailId):0;
+  const dShown=detailTab==="work"?dWork:detailTab==="absence"?dAbs:dAll;
+  const TABS=[{id:"heures",icon:"📊",label:"Heures & Absences"},{id:"salaries",icon:"👥",label:"Salariés"},{id:"messages",icon:"💬",label:"Messages"}];
+
+  return(
+    <div style={{minHeight:"100vh",background:"#F4F6FA"}}>
+      {showBackupList&&(
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:999,display:"flex",alignItems:"center",justifyContent:"center",padding:"1rem"}}>
+          <div style={{background:"#fff",borderRadius:20,padding:"1.5rem",width:"100%",maxWidth:520,maxHeight:"80vh",overflowY:"auto",boxShadow:"0 24px 64px rgba(0,0,0,0.4)"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"1rem"}}>
+              <h3 style={{margin:0,color:NAVY,fontSize:18,fontWeight:800}}>🕐 Sauvegardes automatiques</h3>
+              <button onClick={()=>setShowBackupList(false)} style={{background:"#FFF5F5",border:"none",borderRadius:8,padding:"6px 12px",color:"#C53030",cursor:"pointer",fontWeight:700}}>✕</button>
+            </div>
+            <p style={{color:"#718096",fontSize:13,marginBottom:"1rem"}}>Sauvegardes stockées dans Google Sheets — 60 derniers jours conservés.</p>
+            {backupLoading?<div style={{textAlign:"center",padding:"2rem",color:"#718096"}}>Chargement…</div>:
+            backupList.length===0?<div style={{textAlign:"center",padding:"2rem",color:"#A0AEC0"}}>Aucune sauvegarde trouvée.<br/><small>La première sera créée ce soir à 22h.</small></div>:(
+              <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                {backupList.map(b=>(
+                  <div key={b.name} style={{background:"#F7F9FC",borderRadius:12,padding:"0.75rem 1rem",display:"flex",alignItems:"center",justifyContent:"space-between",gap:12}}>
+                    <div>
+                      <div style={{fontWeight:700,fontSize:14,color:NAVY}}>📅 {b.date}</div>
+                      <div style={{fontSize:11,color:"#A0AEC0",marginTop:2}}>Sauvegarde automatique 22h00</div>
+                    </div>
+                    <button onClick={()=>restoreFromFirebaseBackup(b.date)}
+                      style={{background:`${NAVY}10`,border:`1px solid ${NAVY}20`,borderRadius:9,padding:"6px 14px",fontSize:12,color:NAVY,cursor:"pointer",fontWeight:700,flexShrink:0}}>
+                      ↩ Restaurer
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      <div style={{background:`linear-gradient(135deg,${NAVYDK},${NAVYLT})`,padding:"1.25rem 1.5rem 0"}}>
+        <div style={{maxWidth:900,margin:"0 auto"}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"1.25rem"}}>
+            <div style={{display:"flex",alignItems:"center",gap:12}}>
+              <div style={{width:38,height:38,borderRadius:11,background:"rgba(255,255,255,0.15)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20}}>📊</div>
+              <div><div style={{color:"rgba(255,255,255,0.5)",fontSize:11,fontWeight:700,letterSpacing:1.2}}>FERMAPRO · BACK OFFICE</div><div style={{color:"#fff",fontWeight:800,fontSize:18}}>Administration</div></div>
+            </div>
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={()=>backupAll(false)} style={{background:"rgba(72,187,120,0.25)",border:"1px solid rgba(72,187,120,0.4)",borderRadius:10,padding:"7px 14px",color:"#9AE6B4",fontSize:12,cursor:"pointer",fontWeight:700}}>
+                💾 Sauvegarder
+                {lsg(BACKUP_KEY)&&<span style={{display:"block",fontSize:9,color:"rgba(154,230,180,0.7)",marginTop:1}}>Dernière : {lsg(BACKUP_KEY)}</span>}
+              </button>
+              <button onClick={()=>{setShowBackupList(true);loadBackupList();}} style={{background:"rgba(255,200,0,0.25)",border:"1px solid rgba(255,200,0,0.4)",borderRadius:10,padding:"7px 14px",color:"#FFE066",fontSize:12,cursor:"pointer",fontWeight:700}}>🕐 Historique</button>
+              <label style={{background:"rgba(200,150,255,0.25)",border:"1px solid rgba(200,150,255,0.4)",borderRadius:10,padding:"7px 14px",color:"#D6BCFA",fontSize:12,cursor:"pointer",fontWeight:700}}>
+                📂 Restaurer fichier
+                <input type="file" accept=".json" onChange={restoreFromBackup} style={{display:"none"}}/>
+              </label>
+              <button onClick={onLogout} style={{background:"rgba(255,255,255,0.1)",border:"1px solid rgba(255,255,255,0.2)",borderRadius:10,padding:"7px 14px",color:"#fff",fontSize:12,cursor:"pointer",fontWeight:600}}>Déconnexion</button>
+            </div>
+          </div>
+          <div style={{display:"flex",gap:4}}>
+            {TABS.map(t=>(
+              <button key={t.id} onClick={()=>setTab(t.id)} style={{background:tab===t.id?"#fff":"rgba(255,255,255,0.08)",color:tab===t.id?NAVY:"rgba(255,255,255,0.65)",border:"none",borderRadius:"10px 10px 0 0",padding:"10px 20px",fontSize:13,fontWeight:800,cursor:"pointer",display:"flex",alignItems:"center",gap:7}}>
+                <span>{t.icon}</span>{t.label}
+                {t.id==="salaries"&&<span style={{background:tab===t.id?`${MAG}20`:"rgba(255,255,255,0.15)",color:tab===t.id?MAG:"rgba(255,255,255,0.7)",borderRadius:5,padding:"1px 7px",fontSize:11,fontWeight:800}}>{employees.length}</span>}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div style={{padding:"1.5rem",maxWidth:900,margin:"0 auto"}}>
+        {tab==="salaries"?<EmpManager employees={employees} onUpdate={handleUpdate}/>:
+        tab==="messages"?<MessagesPanel employees={employees}/>:(
+          <>
+            <div style={{display:"flex",gap:10,marginBottom:"1.5rem",flexWrap:"wrap",alignItems:"center"}}>
+              <select value={ym} onChange={e=>setYm(e.target.value)} style={{padding:"9px 14px",borderRadius:10,border:"1.5px solid #E2E8F0",fontSize:14,fontWeight:700,color:NAVY,background:"#fff",cursor:"pointer",outline:"none"}}>{months.map(m=><option key={m} value={m}>{fmtYM(m)}</option>)}</select>
+              <button onClick={exportCSV} style={{background:NAVY,color:"#fff",border:"none",borderRadius:10,padding:"9px 18px",fontSize:13,fontWeight:700,cursor:"pointer",display:"flex",alignItems:"center",gap:8}}>📥 Exporter Excel</button>
+              {detailId&&<button onClick={()=>{setDetailId(null);setDetailTab("all");}} style={{background:`${MAG}12`,color:MAG,border:`1.5px solid ${MAG}30`,borderRadius:10,padding:"9px 14px",fontSize:13,fontWeight:700,cursor:"pointer"}}>← Retour</button>}
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12,marginBottom:"1.5rem"}}>
+              {[{v:fmtH(grandH),l:"Total heures",c:NAVY},{v:`${grandAbs}j`,l:"Total absences",c:"#C53030"},{v:active,l:"Salariés actifs",c:MAG}].map(({v,l,c})=>(
+                <div key={l} style={{background:"#fff",borderRadius:16,padding:"1.1rem",textAlign:"center",boxShadow:"0 2px 10px rgba(0,0,0,0.06)",borderTop:`3px solid ${c}`}}>
+                  <div style={{fontSize:24,fontWeight:800,color:c}}>{v}</div>
+                  <div style={{fontSize:11,color:"#718096",marginTop:4,fontWeight:700,letterSpacing:0.4}}>{l.toUpperCase()}</div>
+                </div>
+              ))}
+            </div>
+
+            {loading?<Spinner/>:!detailId?(
+              <Card style={{padding:0,overflow:"hidden"}}>
+                <div style={{padding:"1.1rem 1.5rem",borderBottom:"1px solid #EDF2F7",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                  <span style={{fontWeight:800,color:NAVY,fontSize:15}}>Synthèse — {fmtYM(ym)}</span>
+                  <Badge color={NAVY}>{employees.length} salariés</Badge>
+                </div>
+                {employees.map((emp,i)=>{
+                  const th=eTotH(emp.id),ta=eTotAbs(emp.id),pct=grandH>0?(th/grandH)*100:0;
+                  return(
+                    <div key={emp.id} onClick={()=>setDetailId(emp.id)} style={{padding:"1rem 1.5rem",borderBottom:i<employees.length-1?"1px solid #EDF2F7":"none",display:"flex",alignItems:"center",gap:14,cursor:"pointer"}} onMouseEnter={e=>e.currentTarget.style.background="#F7FAFC"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                      <Avatar name={emp.name} size={42}/>
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{fontWeight:700,color:"#1A202C",fontSize:15,marginBottom:5}}>{emp.name}</div>
+                        <div style={{height:4,background:"#EDF2F7",borderRadius:5,overflow:"hidden",marginBottom:6}}><div style={{width:`${pct}%`,height:"100%",background:`linear-gradient(90deg,${MAG},${MAGLT})`,borderRadius:5}}/></div>
+                        {ta>0&&<div style={{display:"flex",gap:5,flexWrap:"wrap"}}>{ABS.filter(a=>eAbs(emp.id).some(e=>e.absType===a.id)).map(a=>{const n=eAbs(emp.id).filter(e=>e.absType===a.id).reduce((s,e)=>s+Number(e.nbDays||1),0);return<span key={a.id} style={{fontSize:11,background:a.bg,color:a.color,borderRadius:5,padding:"1px 7px",fontWeight:700}}>{a.icon} {n}j</span>;})}</div>}
+                      </div>
+                      <div style={{textAlign:"right",minWidth:90}}>
+                        <div style={{fontWeight:800,fontSize:17,color:th>0?MAG:"#CBD5E0"}}>{fmtH(th)}</div>
+                        {ta>0&&<div style={{fontSize:12,color:"#C53030",fontWeight:700,marginTop:2}}>{ta}j abs.</div>}
+                        <div style={{fontSize:11,color:"#A0AEC0"}}>{eWork(emp.id).length}j trav.</div>
+                      </div>
+                      <span style={{color:"#CBD5E0",fontSize:20}}>›</span>
+                    </div>
+                  );
+                })}
+                <div style={{padding:"1rem 1.5rem",background:`linear-gradient(135deg,${NAVY}08,${MAG}05)`,borderTop:"2px solid #EDF2F7",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                  <div><div style={{fontWeight:800,color:NAVY,fontSize:14}}>TOTAL ENTREPRISE</div>{grandAbs>0&&<div style={{fontSize:12,color:"#C53030",fontWeight:700}}>{grandAbs} j. absence</div>}</div>
+                  <span style={{fontWeight:800,color:NAVY,fontSize:20}}>{fmtH(grandH)}</span>
+                </div>
+              </Card>
+            ):(
+              <Card style={{padding:0,overflow:"hidden"}}>
+                <div style={{padding:"1.25rem 1.5rem",background:`linear-gradient(135deg,${NAVY}08,${MAG}05)`,borderBottom:"1px solid #EDF2F7"}}>
+                  <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:dAbs.length>0?12:0}}>
+                    <Avatar name={dEmp.name} size={48}/>
+                    <div style={{flex:1}}><div style={{fontWeight:800,color:NAVY,fontSize:17}}>{dEmp.name}</div><div style={{color:"#718096",fontSize:13}}>{fmtYM(ym)}</div></div>
+                    <div style={{textAlign:"right"}}><div style={{fontWeight:800,fontSize:22,color:MAG}}>{fmtH(dH)}</div>{dAbsDays>0&&<div style={{fontSize:13,color:"#C53030",fontWeight:700}}>{dAbsDays}j absence</div>}</div>
+                  </div>
+                  {dAbs.length>0&&<div style={{display:"flex",gap:8,flexWrap:"wrap"}}>{ABS.filter(a=>dAbs.some(e=>e.absType===a.id)).map(a=>{const n=dAbs.filter(e=>e.absType===a.id).reduce((s,e)=>s+Number(e.nbDays||1),0);return<span key={a.id} style={{fontSize:12,background:a.bg,color:a.color,borderRadius:8,padding:"4px 10px",fontWeight:700,border:`1px solid ${a.color}30`}}>{a.icon} {a.label} · {n}j</span>;})}</div>}
+                </div>
+                <div style={{padding:"0.75rem 1.5rem",borderBottom:"1px solid #EDF2F7",display:"flex",gap:8,flexWrap:"wrap"}}>
+                  {[{v:"all",l:"Tout"},{v:"work",l:`⏱ Heures (${dWork.length})`},{v:"absence",l:`📅 Absences (${dAbs.length})`}].map(t=>(
+                    <button key={t.v} onClick={()=>setDetailTab(t.v)} style={{background:detailTab===t.v?NAVY:"transparent",color:detailTab===t.v?"#fff":"#718096",border:`1.5px solid ${detailTab===t.v?NAVY:"#E2E8F0"}`,borderRadius:8,padding:"4px 12px",fontSize:12,cursor:"pointer",fontWeight:700}}>{t.l}</button>
+                  ))}
+                </div>
+                {dShown.length===0?<div style={{textAlign:"center",padding:"3rem",color:"#A0AEC0"}}><div style={{fontSize:40}}>📭</div><p>Aucune entrée</p></div>:(
+                  <>
+                    <div style={{padding:"0.6rem 1.5rem",background:"#F7F9FC",borderBottom:"1px solid #EDF2F7",display:"grid",gridTemplateColumns:"1.2fr 1fr 1.5fr 80px",gap:8}}>
+                      {["Date","Type","Détail","Durée"].map(h=><div key={h} style={{fontSize:11,fontWeight:700,color:"#A0AEC0",letterSpacing:0.5}}>{h.toUpperCase()}</div>)}
+                    </div>
+                    {dShown.map((entry,i)=>{
+                      const isAbs=entry.type==="absence";const typ=isAbs?at(entry.absType):null;const h=isAbs?null:calcH(entry.startTime,entry.endTime,entry.breakMin);
+                      return(
+                        <div key={entry.id} style={{padding:"0.9rem 1.5rem",borderBottom:i<dShown.length-1?"1px solid #EDF2F7":"none",display:"grid",gridTemplateColumns:"1.2fr 1fr 1.5fr 80px",gap:8,alignItems:"center"}} onMouseEnter={e=>e.currentTarget.style.background="#F7FAFC"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                          <div style={{fontWeight:700,fontSize:13,color:"#1A202C"}}>{fmtDate(entry.date||entry.dateStart)}</div>
+                          {isAbs?<Badge color={typ.color} bg={typ.bg}>{typ.icon} {typ.label}</Badge>:<span style={{fontSize:12,background:`${MAG}12`,color:MAG,borderRadius:6,padding:"2px 8px",fontWeight:700,display:"inline-block"}}>⏱ Travail</span>}
+                          <div style={{fontSize:12,color:"#718096"}}>
+                            {isAbs?<>{entry.halfDay==="half"?"½ journée":(entry.dateEnd&&entry.dateEnd!==entry.dateStart?`→ ${fmtDate(entry.dateEnd)}`:"")}{entry.note&&<div style={{fontStyle:"italic",color:"#A0AEC0",marginTop:1,fontSize:11}}>"{entry.note}"</div>}</>
+                            :<>{entry.startTime}–{entry.endTime}{Number(entry.breakMin)>0&&<span style={{color:"#CBD5E0"}}> p.{entry.breakMin}min</span>}{entry.note&&<div style={{fontStyle:"italic",color:"#A0AEC0",marginTop:1,fontSize:11}}>{entry.note}</div>}</>}
+                          </div>
+                          <div style={{fontWeight:800,fontSize:15,color:isAbs?typ.color:MAG,textAlign:"right"}}>{isAbs?`${entry.nbDays||1}j`:fmtH(h)}</div>
+                        </div>
+                      );
+                    })}
+                    <div style={{padding:"1rem 1.5rem",background:`${NAVY}05`,borderTop:`2px solid ${NAVY}15`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                      <div style={{display:"flex",gap:18}}>
+                        <div><span style={{fontWeight:600,color:"#718096",fontSize:12}}>Heures : </span><span style={{fontWeight:800,color:MAG,fontSize:15}}>{fmtH(dH)}</span></div>
+                        {dAbsDays>0&&<div><span style={{fontWeight:600,color:"#718096",fontSize:12}}>Absences : </span><span style={{fontWeight:800,color:"#C53030",fontSize:15}}>{dAbsDays}j</span></div>}
+                      </div>
+                      <span style={{fontSize:12,color:"#A0AEC0",fontWeight:600}}>{dAll.length} entrée{dAll.length>1?"s":""}</span>
+                    </div>
+                  </>
+                )}
+              </Card>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── ROOT ──────────────────────────────────────────────────────────────────────
+function App(){
+  const[view,setView]=useState("loading");
+  const[employee,setEmployee]=useState(null);
+  const[employees,setEmployees]=useState([]);
+
+  useEffect(()=>{
+    sg("fp:employees").then(data=>{
+      if(data&&data.length>0){
+        setEmployees(data);
+        lss("fp:employees", data);
+      } else {
+        setEmployees(INIT_EMP);
+        ss("fp:employees", INIT_EMP);
+      }
+      setView("landing");
+    }).catch(()=>{
+      const local = lsg("fp:employees");
+      setEmployees(local&&local.length>0 ? local : INIT_EMP);
+      setView("landing");
+    });
+  },[]);
+
+  const go=v=>setView(v);
+
+  if(view==="loading") return(
+    <div style={{minHeight:"100vh",background:`linear-gradient(155deg,${NAVYDK},${NAVYLT})`,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:20}}>
+      <div style={{width:60,height:60,borderRadius:20,background:MAG,display:"flex",alignItems:"center",justifyContent:"center",boxShadow:`0 12px 40px ${MAG}60`}}>
+        <svg width="34" height="34" viewBox="0 0 42 42" fill="none"><path d="M13 21.5l5 5 11-11" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+      </div>
+      <div style={{width:36,height:36,border:"3px solid rgba(255,255,255,0.2)",borderTop:"3px solid #fff",borderRadius:"50%",animation:"spin 0.8s linear infinite"}}/>
+      <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+      <p style={{color:"rgba(255,255,255,0.5)",fontSize:13,margin:0}}>Chargement…</p>
+    </div>
+  );
+
+  if(view==="setup")     return<FirebaseSetup/>;
+  if(view==="landing")   return<Landing onEmployee={()=>go("empLogin")} onAdmin={()=>go("adminLogin")} fbReady={FB_READY}/>;
+  if(view==="empLogin")  return<EmpLogin employees={employees} onLogin={e=>{setEmployee(e);go("empDash");}} onBack={()=>go("landing")}/>;
+  if(view==="empDash")   return<EmpDash employee={employee} employees={employees} onLogout={()=>{setEmployee(null);go("landing");}} onEmpUpdate={emp=>{setEmployee(emp);setEmployees(prev=>prev.map(e=>e.id===emp.id?emp:e));}}/>; 
+  if(view==="adminLogin")return<AdminLogin onLogin={()=>go("adminDash")} onBack={()=>go("landing")}/>;
+  if(view==="adminDash") return<AdminDash employees={employees} onLogout={()=>go("landing")} onEmpChange={setEmployees}/>;
+  return null;
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
