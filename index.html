@@ -72,31 +72,84 @@ async function sg(k){
   return lsg(k); // fallback local
 }
 
-// ── Écriture vers Apps Script (POST text/plain — pas de preflight CORS) ──────
+// ── Écriture vers Apps Script (POST text/plain) ───────────────────────────────
 async function ss(k,v){
   lss(k,v); // localStorage IMMÉDIAT — toujours fiable
   if(!GS_READY)return;
   try{
     fetch(SCRIPT_URL,{
       method:"POST",
-      headers:{"Content-Type":"text/plain"}, // simple request, pas de preflight
+      headers:{"Content-Type":"text/plain"},
       body:JSON.stringify({secret:SECRET,action:"set",key:k,value:v}),
       redirect:"follow"
-    }).catch(e=>console.warn("ss async error",e));
-  }catch(e){console.warn("ss error",e);}
+    }).catch(e=>{console.warn("ss async error",e);retryQueueAdd(k,v);});
+  }catch(e){console.warn("ss error",e);retryQueueAdd(k,v);}
 }
 
 // ── Alias compatibilité ───────────────────────────────────────────────────────
 function keyToPath(k){return k;}
 const FB_READY=GS_READY;
-const FS_BASE=null; // plus utilisé
+const FS_BASE=null;
 
-// ── safeSave — merge anti-écrasement multi-appareils (D1) ────────────────────
-// Fusionne les entrées locales avec celles de Sheets avant écriture.
-// Priorité aux IDs locaux, conservation des entrées remotess absentes en local.
+// ════════════════════════════════════════════════════════════════════
+// R4 — QUEUE DE RETRY PERSISTANTE
+// Les writes échoués sont stockés dans localStorage et réessayés
+// au prochain chargement de l'app (max 50 entrées, expiration 24h)
+// ════════════════════════════════════════════════════════════════════
+const RETRY_KEY="fp:retry_queue";
+const RETRY_MAX=50;
+const RETRY_TTL=86400000; // 24h en ms
+
+function retryQueueAdd(key,value){
+  if(!GS_READY)return;
+  try{
+    const q=lsg(RETRY_KEY)||[];
+    const entry={key,value,ts:Date.now(),attempts:0};
+    // Dédupliquer : remplacer si même clé déjà en queue
+    const filtered=q.filter(e=>e.key!==key);
+    const next=[entry,...filtered].slice(0,RETRY_MAX);
+    lss(RETRY_KEY,next);
+    console.warn(`⚠️ Write échoué mis en queue : ${key} (${next.length} en attente)`);
+  }catch(e){}
+}
+
+async function retryQueueFlush(){
+  if(!GS_READY)return;
+  const q=lsg(RETRY_KEY)||[];
+  if(!q.length)return;
+  const now=Date.now();
+  const valid=q.filter(e=>now-e.ts<RETRY_TTL);
+  if(!valid.length){lss(RETRY_KEY,[]);return;}
+  const failed=[];
+  for(const item of valid){
+    try{
+      const r=await fetch(SCRIPT_URL,{
+        method:"POST",headers:{"Content-Type":"text/plain"},
+        body:JSON.stringify({secret:SECRET,action:"set",key:item.key,value:item.value}),
+        redirect:"follow"
+      });
+      const j=await r.json();
+      if(!j.ok)throw new Error(j.error);
+      console.log(`✅ Retry réussi : ${item.key}`);
+    }catch(e){
+      console.warn(`❌ Retry échoué : ${item.key}`,e);
+      failed.push({...item,attempts:(item.attempts||0)+1});
+    }
+  }
+  lss(RETRY_KEY,failed.filter(e=>e.attempts<5)); // abandon après 5 tentatives
+  if(failed.length===0&&valid.length>0)
+    console.log(`✅ Queue retry vidée (${valid.length} write(s) synchronisé(s))`);
+}
+
+// ════════════════════════════════════════════════════════════════════
+// R3 — SAFESAVE avec merge par TIMESTAMP (updatedAt)
+// Résolution de conflits : version la plus récente gagne
+// Tombstones : les entrées supprimées sont marquées deleted:true
+//   → propagation fiable des suppressions entre appareils
+// ════════════════════════════════════════════════════════════════════
 async function safeSave(key,newEntries,onSyncError){
   lss(key,newEntries); // localStorage immédiat — toujours fiable
-  if(!GS_READY)return;
+  if(!GS_READY){retryQueueAdd(key,newEntries);return;}
   try{
     const ctrl=new AbortController();
     const tid=setTimeout(()=>ctrl.abort(),8000);
@@ -105,17 +158,49 @@ async function safeSave(key,newEntries,onSyncError){
     clearTimeout(tid);
     const j=await r.json();
     const remote=(j.ok&&Array.isArray(j.data))?j.data:[];
-    const localIds=new Set(newEntries.map(e=>e.id));
-    // Merge : nouvelles entrées locales + entrées remotess non présentes en local
-    const merged=[...newEntries,...remote.filter(e=>!localIds.has(e.id))]
+
+    // ── R3 : Merge par timestamp ──────────────────────────────────
+    // Construire une map id→entrée pour chaque source
+    const remoteMap=new Map(remote.map(e=>[e.id,e]));
+    const localMap=new Map(newEntries.map(e=>[e.id,e]));
+    const allIds=new Set([...remoteMap.keys(),...localMap.keys()]);
+
+    const merged=[];
+    allIds.forEach(id=>{
+      const loc=localMap.get(id);
+      const rem=remoteMap.get(id);
+      if(loc&&rem){
+        // Les deux existent : garder le plus récent (updatedAt)
+        const locTs=loc.updatedAt||0;
+        const remTs=rem.updatedAt||0;
+        merged.push(locTs>=remTs?loc:rem);
+      } else {
+        // N'existe que d'un côté
+        merged.push(loc||rem);
+      }
+    });
+
+    // Trier, exclure les tombstones (deleted:true) de l'affichage
+    // mais les garder en base pour propager les suppressions (TTL 7j)
+    const now=Date.now();
+    const TTL_DELETED=7*86400000;
+    const final=merged
+      .filter(e=>!e.deleted||(now-(e.deletedAt||0)<TTL_DELETED))
       .sort((a,b)=>(a.date||a.dateStart||"").localeCompare(b.date||b.dateStart||""));
-    lss(key,merged);
+
+    lss(key,final);
+
     fetch(SCRIPT_URL,{
       method:"POST",headers:{"Content-Type":"text/plain"},
-      body:JSON.stringify({secret:SECRET,action:"set",key,value:merged}),redirect:"follow"
-    }).catch(e=>{console.warn("safeSave write error",e);if(onSyncError)onSyncError();});
+      body:JSON.stringify({secret:SECRET,action:"set",key,value:final}),redirect:"follow"
+    }).catch(e=>{
+      console.warn("safeSave write error",e);
+      retryQueueAdd(key,final); // R4 — mise en queue si échec
+      if(onSyncError)onSyncError();
+    });
   }catch(e){
-    console.warn("safeSave merge error, fallback simple save",e);
+    console.warn("safeSave merge error, fallback",e);
+    retryQueueAdd(key,newEntries); // R4
     if(onSyncError)onSyncError();
     fetch(SCRIPT_URL,{
       method:"POST",headers:{"Content-Type":"text/plain"},
@@ -1016,8 +1101,14 @@ function EmpDash({employee,employees,onLogout,onEmpUpdate}){
   }
   async function del(id){
     setSyncError(false);
-    const next=entries.filter(e=>e.id!==id);
-    setEntries(next);
+    // R3 — Tombstone : marquer deleted plutôt que supprimer
+    // La suppression sera propagée à tous les appareils via le merge timestamp
+    const next=entries.map(e=>e.id===id
+      ?{...e,deleted:true,deletedAt:Date.now(),updatedAt:Date.now()}
+      :e);
+    // Afficher sans les tombstones (filtrés côté UI)
+    const visible=next.filter(e=>!e.deleted);
+    setEntries(visible);
     await safeSave(key,next,()=>setSyncError(true));
   }
 
@@ -1985,6 +2076,14 @@ function AdminDash({employees:initEmp,onLogout,onEmpChange}){
                   <span style={{color:loading?"#FEFCBF":"#C6F6D5",fontSize:10,fontWeight:700}}>{loading?"Chargement…":"Sheets connecté"}</span>
                 </div>
               )}
+              {/* R4 — Indicateur retry queue */}
+              {(()=>{const q=lsg("fp:retry_queue")||[];return q.length>0?(
+                <div title={`${q.length} write(s) en attente de synchronisation`}
+                  style={{display:"inline-flex",alignItems:"center",gap:5,background:"rgba(197,48,48,0.25)",border:"1px solid rgba(197,48,48,0.4)",borderRadius:12,padding:"3px 10px",cursor:"pointer"}}
+                  onClick={()=>retryQueueFlush()}>
+                  <span style={{color:"#FEB2B2",fontSize:10,fontWeight:700}}>⟳ {q.length} en attente</span>
+                </div>
+              ):null;})()}
             </div>
             <div style={{display:"flex",gap:8}}>
               <button onClick={()=>backupAll(false)} style={{background:"rgba(72,187,120,0.25)",border:"1px solid rgba(72,187,120,0.4)",borderRadius:10,padding:"7px 14px",color:"#9AE6B4",fontSize:12,cursor:"pointer",fontWeight:700}}>
@@ -2128,6 +2227,8 @@ function App(){
   const[employees,setEmployees]=useState([]);
 
   useEffect(()=>{
+    // R4 — Vider la retry queue au démarrage
+    if(GS_READY) retryQueueFlush().catch(()=>{});
     sg("fp:employees").then(data=>{
       if(data&&data.length>0){
         setEmployees(data);
