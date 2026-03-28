@@ -70,7 +70,17 @@ async function sha256(str){
   return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
 }
 
-// ── #3 — UUID cryptographique (évite collisions ID entre appareils) ───────────
+// ── #4 — Sanitisation des champs texte libres ─────────────────────────────────
+// React échappe déjà le JSX, mais on nettoie en amont pour les logs et exports
+function sanitize(str,maxLen=500){
+  if(!str||typeof str!=="string")return"";
+  return str
+    .replace(/[<>]/g,"") // supprimer balises HTML résiduelles
+    .replace(/javascript:/gi,"") // supprimer protocoles dangereux
+    .replace(/on\w+\s*=/gi,"")   // supprimer event handlers inline
+    .trim()
+    .slice(0,maxLen);
+}
 function uuid(prefix=""){
   if(typeof crypto.randomUUID==="function")
     return prefix+crypto.randomUUID().replace(/-/g,"").slice(0,16);
@@ -306,33 +316,21 @@ async function adminLog(action,detail){
   ss(key,next);
 }
 
-// ── #9 — Monitoring : remontée d'erreurs vers Apps Script ────────────────────
-window.addEventListener("error",(evt)=>{
+// ── #7+#9 — Monitoring : logs structurés + remontée vers Apps Script ──────────
+function logToServer(level, event, data){
   if(!GS_READY)return;
-  const err={
-    msg:evt.message,
-    file:evt.filename,
-    line:evt.lineno,
-    col:evt.colno,
-    ua:navigator.userAgent.slice(0,80),
-    at:new Date().toISOString()
-  };
+  const entry={ts:new Date().toISOString(),level,event,data:data||{},ua:navigator.userAgent.slice(0,60)};
   fetch(SCRIPT_URL,{
     method:"POST",headers:{"Content-Type":"text/plain"},
-    body:JSON.stringify({secret:SECRET,action:"log_error",error:err}),
+    body:JSON.stringify({secret:SECRET,action:"log_error",error:entry}),
     redirect:"follow"
   }).catch(()=>{});
+}
+window.addEventListener("error",(evt)=>{
+  logToServer("ERROR","JS_ERROR",{msg:evt.message,file:evt.filename,line:evt.lineno,col:evt.colno});
 });
 window.addEventListener("unhandledrejection",(evt)=>{
-  if(!GS_READY)return;
-  fetch(SCRIPT_URL,{
-    method:"POST",headers:{"Content-Type":"text/plain"},
-    body:JSON.stringify({secret:SECRET,action:"log_error",error:{
-      msg:"UnhandledRejection: "+(evt.reason?.message||String(evt.reason)),
-      at:new Date().toISOString()
-    }}),
-    redirect:"follow"
-  }).catch(()=>{});
+  logToServer("ERROR","UNHANDLED_REJECTION",{msg:String(evt.reason?.message||evt.reason)});
 });
 
 console.log(GS_READY?"✅ Google Sheets Apps Script prêt":"⚠️ Mode local — configurez SCRIPT_URL");
@@ -918,7 +916,7 @@ function WorkForm({initial,onSave,onCancel}){
       {h>0&&<div style={{background:`linear-gradient(135deg,${NAVY}10,${MAG}10)`,borderRadius:12,padding:"0.85rem 1rem",marginBottom:16,display:"flex",justifyContent:"space-between",alignItems:"center",border:`1px solid ${MAG}20`}}><span style={{color:"#4A5568",fontSize:14,fontWeight:600}}>⏱ Temps effectif</span><span style={{color:MAG,fontWeight:800,fontSize:20}}>{fmtH(h)}</span></div>}
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
         <Btn variant="outline" onClick={onCancel}>Annuler</Btn>
-        <Btn onClick={()=>onSave({...form,type:"work"})} disabled={!form.date||h<=0}>Enregistrer</Btn>
+        <Btn onClick={()=>onSave({...form,type:"work",note:sanitize(form.note,200)})} disabled={!form.date||h<=0}>Enregistrer</Btn>
       </div>
     </Card>
   );
@@ -986,7 +984,7 @@ function AbsForm({initial,onSave,onCancel}){
       {form.halfDay!=="half"&&form.absType!=="mal"&&form.absType!=="accd"&&<div style={{background:"#EBF8FF",borderRadius:8,padding:"5px 10px",fontSize:11,color:"#2B6CB0",fontWeight:600,marginBottom:12}}>ℹ️ Week-ends et jours fériés exclus automatiquement</div>}
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
         <Btn variant="outline" onClick={onCancel}>Annuler</Btn>
-        <Btn onClick={()=>onSave({...form,type:"absence",nbDays:nb})} disabled={!form.dateStart}>Enregistrer</Btn>
+        <Btn onClick={()=>onSave({...form,type:"absence",nbDays:nb,note:sanitize(form.note,200)})} disabled={!form.dateStart}>Enregistrer</Btn>
       </div>
     </Card>
   );
@@ -1011,9 +1009,9 @@ function ProfileEdit({employee,onSave,onClose,onExport,ym}){
         const canvas=document.createElement("canvas");
         const size=Math.min(img.width,img.height);
         const sx=(img.width-size)/2,sy=(img.height-size)/2;
-        canvas.width=100;canvas.height=100;
+        canvas.width=64;canvas.height=64;
         canvas.getContext("2d").drawImage(img,sx,sy,size,size,0,0,100,100);
-        setPhoto(canvas.toDataURL("image/jpeg",0.5));
+        setPhoto(canvas.toDataURL("image/jpeg",0.35));
         setSaved(false);
       };
       img.src=ev.target.result;
@@ -1470,10 +1468,10 @@ function EmpManager({employees,onUpdate}){
         const canvas=document.createElement("canvas");
         const size=Math.min(img.width,img.height);
         const sx=(img.width-size)/2,sy=(img.height-size)/2;
-        canvas.width=100;canvas.height=100;
+        canvas.width=64;canvas.height=64;
         const ctx=canvas.getContext("2d");
         ctx.drawImage(img,sx,sy,size,size,0,0,100,100);
-        setF("photo")(canvas.toDataURL("image/jpeg",0.50));
+        setF("photo")(canvas.toDataURL("image/jpeg",0.35));
       };
       img.src=ev.target.result;
     };
@@ -1500,7 +1498,7 @@ function EmpManager({employees,onUpdate}){
     if(dup){setErr(`PIN déjà utilisé par ${dup.name}.`);return;}
     setSaving(true);
     let next;
-    const data={name:form.name.trim(),pin:pinHash,contractType:form.contractType,entryDate:form.entryDate,photo:form.photo,email:form.email||'',phone:form.phone||'',mealType:form.mealType||"ticket"};
+    const data={name:sanitize(form.name.trim(),100),pin:pinHash,contractType:form.contractType,entryDate:form.entryDate,photo:form.photo,email:sanitize(form.email||'',200),phone:sanitize(form.phone||'',20),mealType:form.mealType||"ticket"};
     if(editId){next=employees.map(emp=>emp.id===editId?{...emp,...data}:emp);showToast("✓ Modifié et synchronisé");adminLog("MODIF_EMPLOYE",`${data.name} (${editId})`);}
     else{next=[...employees,{id:uuid('emp_'),...data}];showToast("✓ Ajouté et synchronisé");adminLog("AJOUT_EMPLOYE",data.name);}
     await ss("fp:employees",next);
@@ -2371,10 +2369,50 @@ function AdminDash({employees:initEmp,onLogout,onEmpChange}){
 }
 
 // ── ROOT ──────────────────────────────────────────────────────────────────────
+// ── #2 — TIMEOUT SESSION ─────────────────────────────────────────────────────
+// Constante : 30 minutes d'inactivité → déconnexion automatique
+const SESSION_TIMEOUT_MS = 30 * 60 * 1000;
+
 function App(){
   const[view,setView]=useState("loading");
   const[employee,setEmployee]=useState(null);
   const[employees,setEmployees]=useState([]);
+  const[sessionWarning,setSessionWarning]=useState(false);
+  const sessionTimer=React.useRef(null);
+  const warningTimer=React.useRef(null);
+
+  // #2 — Réinitialiser le timer à chaque activité utilisateur
+  const resetSessionTimer=React.useCallback(()=>{
+    if(sessionTimer.current) clearTimeout(sessionTimer.current);
+    if(warningTimer.current) clearTimeout(warningTimer.current);
+    setSessionWarning(false);
+    // Avertissement 5 min avant expiration
+    warningTimer.current=setTimeout(()=>setSessionWarning(true), SESSION_TIMEOUT_MS - 5*60*1000);
+    // Déconnexion automatique
+    sessionTimer.current=setTimeout(()=>{
+      setEmployee(null);
+      setView("landing");
+      setSessionWarning(false);
+      console.log("⏱ Session expirée — déconnexion automatique");
+    }, SESSION_TIMEOUT_MS);
+  },[]);
+
+  // Démarrer le timer seulement si une session est active (salarié ou admin)
+  useEffect(()=>{
+    const isActive=view==="empDash"||view==="adminDash";
+    if(isActive){
+      resetSessionTimer();
+      const events=["mousedown","keydown","touchstart","scroll","click"];
+      const handler=()=>resetSessionTimer();
+      events.forEach(e=>window.addEventListener(e,handler,{passive:true}));
+      return()=>{
+        events.forEach(e=>window.removeEventListener(e,handler));
+        if(sessionTimer.current) clearTimeout(sessionTimer.current);
+        if(warningTimer.current) clearTimeout(warningTimer.current);
+        setSessionWarning(false);
+      };
+    }
+  },[view,resetSessionTimer]);
 
   useEffect(()=>{
     // R4 — Vider la retry queue au démarrage
@@ -2408,12 +2446,22 @@ function App(){
     </div>
   );
 
+  // #2 — Bandeau d'avertissement session expirante
+  const SessionWarningBanner=()=>sessionWarning?(
+    <div style={{position:"fixed",top:0,left:0,right:0,zIndex:9999,background:"#B7791F",padding:"10px 20px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:12}}>
+      <span style={{color:"#fff",fontWeight:700,fontSize:13}}>⏱ Votre session expire dans 5 minutes par mesure de sécurité.</span>
+      <button onClick={resetSessionTimer} style={{background:"rgba(255,255,255,0.2)",border:"1px solid rgba(255,255,255,0.4)",borderRadius:8,padding:"5px 14px",color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>
+        Rester connecté
+      </button>
+    </div>
+  ):null;
+
   if(view==="setup")     return<FirebaseSetup/>;
   if(view==="landing")   return<Landing onEmployee={()=>go("empLogin")} onAdmin={()=>go("adminLogin")} fbReady={FB_READY}/>;
   if(view==="empLogin")  return<EmpLogin employees={employees} onLogin={e=>{setEmployee(e);go("empDash");}} onBack={()=>go("landing")} onEmpUpdate={(emp,all)=>{setEmployee(emp);if(all)setEmployees(all);}}/>;
-  if(view==="empDash")   return<EmpDash employee={employee} employees={employees} onLogout={()=>{setEmployee(null);go("landing");}} onEmpUpdate={emp=>{setEmployee(emp);setEmployees(prev=>prev.map(e=>e.id===emp.id?emp:e));}}/>; 
+  if(view==="empDash")   return<><SessionWarningBanner/><EmpDash employee={employee} employees={employees} onLogout={()=>{setEmployee(null);go("landing");}} onEmpUpdate={emp=>{setEmployee(emp);setEmployees(prev=>prev.map(e=>e.id===emp.id?emp:e));}}/></>;
   if(view==="adminLogin")return<AdminLogin onLogin={()=>go("adminDash")} onBack={()=>go("landing")}/>;
-  if(view==="adminDash") return<AdminDash employees={employees} onLogout={()=>go("landing")} onEmpChange={setEmployees}/>;
+  if(view==="adminDash") return<><SessionWarningBanner/><AdminDash employees={employees} onLogout={()=>go("landing")} onEmpChange={setEmployees}/></>;
   return null;
 }
 
