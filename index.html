@@ -34,8 +34,17 @@ input,button,select{font-family:inherit;}
 // 🔧 REMPLIR avec l'URL de votre déploiement Apps Script
 const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzu4TSUVdgvITXEvUMT2FFdZYDhKIlBjrzVX046EsE-J0Wt9I_g7J7SStFN5hFDYCU_2Q/exec";
 
-// ✅ SÉCURISÉ — token synchronisé avec PropertiesService dans Apps Script
-const SECRET = "Fp91!#Pro";
+// ✅ SÉCURISÉ — hash SHA-256 du token (jamais le secret en clair)
+const SECRET = "34f54f134f153ee1c638db15567e52f7b9ff469bf24a533eeec1346648c8cdfe";
+
+// ── Utilitaire SHA-256 (Web Crypto API) ──────────────────────────────────────
+async function sha256(str){
+  const buf=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(str));
+  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+
+// ── Hash SHA-256 du mot de passe admin (jamais en clair dans le code) ────────
+const ADMIN_HASH="6d27953b5ffe439d4c4e370cb520b03f0ca22af1837b702bcf459ef03d692f1a";
 
 // ── localStorage — cache local immédiat, toujours disponible ─────────────────
 function lsg(k){try{const v=localStorage.getItem(k);return v?JSON.parse(v):null;}catch{return null;}}
@@ -82,6 +91,48 @@ function keyToPath(k){return k;}
 const FB_READY=GS_READY;
 const FS_BASE=null; // plus utilisé
 
+// ── safeSave — merge anti-écrasement multi-appareils (D1) ────────────────────
+// Fusionne les entrées locales avec celles de Sheets avant écriture.
+// Priorité aux IDs locaux, conservation des entrées remotess absentes en local.
+async function safeSave(key,newEntries,onSyncError){
+  lss(key,newEntries); // localStorage immédiat — toujours fiable
+  if(!GS_READY)return;
+  try{
+    const ctrl=new AbortController();
+    const tid=setTimeout(()=>ctrl.abort(),8000);
+    const url=`${SCRIPT_URL}?secret=${SECRET}&action=get&key=${encodeURIComponent(key)}`;
+    const r=await fetch(url,{redirect:"follow",signal:ctrl.signal});
+    clearTimeout(tid);
+    const j=await r.json();
+    const remote=(j.ok&&Array.isArray(j.data))?j.data:[];
+    const localIds=new Set(newEntries.map(e=>e.id));
+    // Merge : nouvelles entrées locales + entrées remotess non présentes en local
+    const merged=[...newEntries,...remote.filter(e=>!localIds.has(e.id))]
+      .sort((a,b)=>(a.date||a.dateStart||"").localeCompare(b.date||b.dateStart||""));
+    lss(key,merged);
+    fetch(SCRIPT_URL,{
+      method:"POST",headers:{"Content-Type":"text/plain"},
+      body:JSON.stringify({secret:SECRET,action:"set",key,value:merged}),redirect:"follow"
+    }).catch(e=>{console.warn("safeSave write error",e);if(onSyncError)onSyncError();});
+  }catch(e){
+    console.warn("safeSave merge error, fallback simple save",e);
+    if(onSyncError)onSyncError();
+    fetch(SCRIPT_URL,{
+      method:"POST",headers:{"Content-Type":"text/plain"},
+      body:JSON.stringify({secret:SECRET,action:"set",key,value:newEntries}),redirect:"follow"
+    }).catch(()=>{});
+  }
+}
+
+// ── adminLog — journalisation des actions admin (F3) ─────────────────────────
+async function adminLog(action,detail){
+  const key="fp:admin:log";
+  const existing=await sg(key)||[];
+  const entry={id:`log_${Date.now()}`,action,detail,at:new Date().toLocaleString("fr-FR")};
+  const next=[entry,...existing].slice(0,200); // garder les 200 dernières
+  ss(key,next);
+}
+
 console.log(GS_READY?"✅ Google Sheets Apps Script prêt":"⚠️ Mode local — configurez SCRIPT_URL");
 </script>
 
@@ -93,8 +144,10 @@ const NAVY="#1E3A7B",NAVYDK="#142B5C",NAVYLT="#2A4F9E",MAG="#E8457A",MAGLT="#F07
 const MONTHS_FR=["Janvier","Février","Mars","Avril","Mai","Juin","Juillet","Août","Septembre","Octobre","Novembre","Décembre"];
 const DAYS_FR=["Dim","Lun","Mar","Mer","Jeu","Ven","Sam"];
 
-// ✅ SÉCURISÉ — mot de passe Back Office renforcé
-const ADMIN_PASS="Ferm@Admin!26";
+// ── Jours fériés français 2026 ────────────────────────────────────────────────
+const FERIES_2026=new Set(["2026-01-01","2026-04-06","2026-05-01","2026-05-08","2026-05-14","2026-05-25","2026-07-14","2026-08-15","2026-11-01","2026-11-11","2026-12-25"]);
+function isFerie(ds){return FERIES_2026.has(ds);}
+function isWeekend(ds){const d=new Date(ds);return d.getDay()===0||d.getDay()===6;}
 
 const CONTRATS=[
   {id:"cdi",  label:"CDI",         color:"#2F855A",bg:"#F0FFF4"},
@@ -232,6 +285,54 @@ service cloud.firestore {
   );
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+// WEBAUTHN — Authentification biométrique (Empreinte / Face ID)
+// ══════════════════════════════════════════════════════════════════════════════
+
+function waSupported(){return!!window.PublicKeyCredential&&!!navigator.credentials;}
+
+function bufToB64(buf){return btoa(String.fromCharCode(...new Uint8Array(buf)));}
+function b64ToBuf(b64){
+  // URL-safe base64 → standard
+  const s=b64.replace(/-/g,"+").replace(/_/g,"/");
+  const bin=atob(s);const buf=new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++)buf[i]=bin.charCodeAt(i);
+  return buf.buffer;
+}
+
+// Enregistrement biométrique — à appeler une seule fois par appareil
+async function waRegister(empId,empName){
+  const challenge=crypto.getRandomValues(new Uint8Array(32));
+  const userId=new TextEncoder().encode(empId);
+  const cred=await navigator.credentials.create({publicKey:{
+    challenge,
+    rp:{name:"Fermapro",id:location.hostname},
+    user:{id:userId,name:empName,displayName:empName},
+    pubKeyCredParams:[{alg:-7,type:"public-key"},{alg:-257,type:"public-key"}],
+    authenticatorSelection:{
+      authenticatorAttachment:"platform", // biométrie appareil uniquement
+      userVerification:"required",
+      residentKey:"preferred"
+    },
+    timeout:60000,
+    attestation:"none"
+  }});
+  return bufToB64(cred.rawId);
+}
+
+// Authentification biométrique — retourne true si succès
+async function waAuthenticate(credentialIdB64){
+  const challenge=crypto.getRandomValues(new Uint8Array(32));
+  const assertion=await navigator.credentials.get({publicKey:{
+    challenge,
+    rpId:location.hostname,
+    allowCredentials:[{id:b64ToBuf(credentialIdB64),type:"public-key",transports:["internal"]}],
+    userVerification:"required",
+    timeout:60000
+  }});
+  return!!assertion; // pas d'exception = biométrie validée par l'appareil
+}
+
 // ── LANDING ───────────────────────────────────────────────────────────────────
 function Landing({onEmployee,onAdmin,fbReady}){
   return(
@@ -272,61 +373,301 @@ function Landing({onEmployee,onAdmin,fbReady}){
   );
 }
 
-// ── LOGIN SALARIÉ ─────────────────────────────────────────────────────────────
-function EmpLogin({employees,onLogin,onBack}){
+// ── LOGIN SALARIÉ — WebAuthn + fallback PIN ───────────────────────────────────
+function EmpLogin({employees,onLogin,onBack,onEmpUpdate}){
   const[step,setStep]=useState("select");
   const[sel,setSel]=useState(null);
   const[pin,setPin]=useState("");
   const[err,setErr]=useState("");
   const[attempts,setAttempts]=useState(0);
   const[locked,setLocked]=useState(false);
+  const[bioState,setBioState]=useState("idle"); // idle | scanning | registering | error | unsupported
+  const[showPinFallback,setShowPinFallback]=useState(false);
+
+  const hasBio=sel&&sel.credentialId&&waSupported();
+  const bioAvail=waSupported();
+
+  // ── Détection appareil pour messages contextuels ────────────────────────────
+  const device=(()=>{
+    const ua=navigator.userAgent;
+    const isIOS=/iPhone|iPad|iPod/.test(ua);
+    const isAndroid=/Android/.test(ua);
+    const isMac=/Macintosh/.test(ua)&&navigator.maxTouchPoints>1===false;
+    const isWin=/Windows/.test(ua);
+    if(isIOS)   return{type:"ios",  icon:"📱",label:"iPhone / iPad",  bio:"Face ID ou Touch ID",  hello:null,       tip:"Votre appareil iOS utilisera Face ID ou Touch ID."};
+    if(isAndroid)return{type:"android",icon:"📱",label:"Android",    bio:"Empreinte digitale",   hello:null,       tip:"Votre téléphone utilisera le capteur d'empreinte ou le déverrouillage facial."};
+    if(isMac)   return{type:"mac",  icon:"💻",label:"Mac",           bio:"Touch ID",             hello:null,       tip:"Utilisez Touch ID sur votre clavier ou trackpad."};
+    if(isWin)   return{type:"win",  icon:"🖥",label:"PC Windows",    bio:"Windows Hello",        hello:true,       tip:"Windows Hello s'ouvrira (code PIN Windows, empreinte ou reconnaissance faciale)."};
+    return       {type:"other",icon:"🖥",label:"Ordinateur",          bio:"clé de sécurité",      hello:null,       tip:"Votre navigateur vous proposera une méthode d'authentification."};
+  })();
+
+  // ── Sélection du collaborateur ──────────────────────────────────────────────
+  function selectEmp(emp){
+    setSel(emp);setPin("");setErr("");setBioState("idle");setShowPinFallback(false);
+    setStep(emp.credentialId&&waSupported()?"bio":"pin");
+  }
+
+  // ── Authentification biométrique ────────────────────────────────────────────
+  async function doBio(){
+    if(!sel.credentialId)return;
+    setBioState("scanning");setErr("");
+    try{
+      const ok=await waAuthenticate(sel.credentialId);
+      if(ok){setBioState("idle");onLogin(sel);}
+      else{setBioState("error");setErr("Authentification refusée.");}
+    }catch(e){
+      setBioState("error");
+      if(e.name==="NotAllowedError")setErr("Accès biométrique refusé ou annulé.");
+      else if(e.name==="InvalidStateError")setErr("Identifiant non reconnu sur cet appareil.");
+      else setErr("Erreur biométrie : "+e.message);
+    }
+  }
+
+  // ── Premier enregistrement biométrique ────────────────────────────────────
+  async function doRegisterBio(){
+    if(!waSupported()){setErr("WebAuthn non supporté sur cet appareil.");return;}
+    setBioState("registering");setErr("");
+    try{
+      const credId=await waRegister(sel.id,sel.name);
+      // Sauvegarder credentialId dans le profil
+      const updated={...sel,credentialId:credId};
+      const allEmps=await sg("fp:employees")||[];
+      const next=allEmps.map(e=>e.id===sel.id?updated:e);
+      await ss("fp:employees",next);
+      if(onEmpUpdate)onEmpUpdate(updated,next);
+      setSel(updated);setBioState("idle");
+      setStep("bio");
+      adminLog("ENREG_BIO",`${sel.name} — enregistrement biométrique`);
+    }catch(e){
+      setBioState("error");
+      if(e.name==="NotAllowedError")setErr("Enregistrement annulé.");
+      else setErr("Erreur enregistrement : "+e.message);
+    }
+  }
+
+  // ── Fallback PIN ─────────────────────────────────────────────────────────
   function doLogin(){
     if(locked)return;
     if(pin===sel.pin){setAttempts(0);onLogin(sel);}
     else{
-      const next=attempts+1;
-      setAttempts(next);
-      setPin("");
+      const next=attempts+1;setAttempts(next);setPin("");
       if(next>=5){
-        setLocked(true);
-        setErr("Trop de tentatives. Attendez 30 secondes.");
+        setLocked(true);setErr("Trop de tentatives. Attendez 30 secondes.");
         setTimeout(()=>{setLocked(false);setAttempts(0);setErr("");},30000);
-      } else {
-        setErr(`Code PIN incorrect. (${next}/5)`);
-      }
+      } else setErr(`Code PIN incorrect. (${next}/5)`);
     }
   }
+
   return(
     <div style={{minHeight:"100vh",background:"#F7F9FC"}}>
       <div style={{background:`linear-gradient(135deg,${NAVYDK},${NAVYLT})`,padding:"1rem 1.25rem"}}>
         <div style={{maxWidth:440,margin:"0 auto",display:"flex",alignItems:"center",gap:10}}>
-          <button onClick={step==="pin"?()=>setStep("select"):onBack} style={{background:"rgba(255,255,255,0.15)",border:"none",color:"#fff",width:36,height:36,borderRadius:10,cursor:"pointer",fontSize:18,display:"flex",alignItems:"center",justifyContent:"center"}}>←</button>
-          <div><div style={{color:"#fff",fontWeight:800,fontSize:17}}>Connexion Salarié</div><div style={{color:"rgba(255,255,255,0.55)",fontSize:12}}>{step==="select"?"Sélectionnez votre nom":`Bonjour, ${sel?.name}`}</div></div>
+          <button onClick={step==="select"?onBack:()=>{setStep("select");setSel(null);setBioState("idle");setShowPinFallback(false);setErr("");}}
+            style={{background:"rgba(255,255,255,0.15)",border:"none",color:"#fff",width:36,height:36,borderRadius:10,cursor:"pointer",fontSize:18,display:"flex",alignItems:"center",justifyContent:"center"}}>←</button>
+          <div>
+            <div style={{color:"#fff",fontWeight:800,fontSize:17}}>Connexion Salarié</div>
+            <div style={{color:"rgba(255,255,255,0.55)",fontSize:12}}>
+              {step==="select"?"Sélectionnez votre nom":step==="bio"?`Bonjour, ${sel?.name} 👋`:step==="register"?`Configurer la biométrie`:`Code PIN — ${sel?.name}`}
+            </div>
+          </div>
         </div>
       </div>
+
       <div style={{padding:"1.5rem",maxWidth:440,margin:"0 auto"}}>
-        {step==="select"?(
+
+        {/* ── ÉTAPE 1 : Sélection collaborateur ── */}
+        {step==="select"&&(
           <div style={{display:"flex",flexDirection:"column",gap:10}}>
             <p style={{color:"#718096",fontSize:12,fontWeight:700,margin:"0 0 4px",letterSpacing:0.5}}>QUI ÊTES-VOUS ?</p>
             {employees.filter(e=>!e.archived).map(emp=>(
-              <button key={emp.id} onClick={()=>{setSel(emp);setPin("");setErr("");setStep("pin");}} style={{background:"#fff",border:"1.5px solid #E2E8F0",borderRadius:16,padding:"1rem 1.25rem",cursor:"pointer",textAlign:"left",display:"flex",alignItems:"center",gap:14}}>
-                {emp.photo?<div style={{width:44,height:44,borderRadius:"50%",overflow:"hidden",flexShrink:0}}><img src={emp.photo} style={{width:"100%",height:"100%",objectFit:"cover"}}/></div>:<Avatar name={emp.name}/>}
-                <span style={{fontWeight:700,fontSize:16,color:"#1A202C",flex:1}}>{emp.name}</span><span style={{color:"#CBD5E0",fontSize:20}}>›</span>
+              <button key={emp.id} onClick={()=>selectEmp(emp)}
+                style={{background:"#fff",border:"1.5px solid #E2E8F0",borderRadius:16,padding:"1rem 1.25rem",cursor:"pointer",textAlign:"left",display:"flex",alignItems:"center",gap:14}}>
+                {emp.photo
+                  ?<div style={{width:44,height:44,borderRadius:"50%",overflow:"hidden",flexShrink:0}}><img src={emp.photo} style={{width:"100%",height:"100%",objectFit:"cover"}}/></div>
+                  :<Avatar name={emp.name}/>
+                }
+                <span style={{fontWeight:700,fontSize:16,color:"#1A202C",flex:1}}>{emp.name}</span>
+                <span style={{fontSize:15}}>{emp.credentialId&&waSupported()?"🔐":"🔢"}</span>
+                <span style={{color:"#CBD5E0",fontSize:20}}>›</span>
               </button>
             ))}
+            {bioAvail&&(
+              <div style={{background:"#EBF8FF",border:"1px solid #BEE3F8",borderRadius:10,padding:"8px 12px",display:"flex",alignItems:"center",gap:8,marginTop:4}}>
+                <span style={{fontSize:16}}>🔐</span>
+                <span style={{fontSize:12,color:"#2B6CB0",fontWeight:600}}>Les icônes 🔐 = connexion par empreinte / Face ID activée</span>
+              </div>
+            )}
           </div>
-        ):(
+        )}
+
+        {/* ── ÉTAPE 2a : Authentification biométrique ── */}
+        {step==="bio"&&sel&&(
+          <Card style={{marginTop:"1rem",textAlign:"center"}}>
+            {sel.photo
+              ?<div style={{width:72,height:72,borderRadius:"50%",overflow:"hidden",margin:"0 auto 1rem",border:`3px solid ${NAVY}20`}}><img src={sel.photo} style={{width:"100%",height:"100%",objectFit:"cover"}}/></div>
+              :<div style={{width:72,height:72,borderRadius:"50%",background:`${MAG}15`,display:"flex",alignItems:"center",justifyContent:"center",fontWeight:800,fontSize:24,color:MAG,margin:"0 auto 1rem"}}>{initials(sel.name)}</div>
+            }
+            <p style={{fontWeight:800,fontSize:19,color:NAVY,margin:"0 0 4px"}}>{sel.name}</p>
+            <p style={{color:"#A0AEC0",fontSize:13,margin:"0 0 1.25rem"}}>Authentification biométrique</p>
+
+            {/* ── Bulle info appareil ── */}
+            <div style={{background:`${NAVY}06`,border:`1px solid ${NAVY}12`,borderRadius:12,padding:"8px 12px",marginBottom:"1.25rem",display:"flex",alignItems:"center",gap:10,textAlign:"left"}}>
+              <span style={{fontSize:20,flexShrink:0}}>{device.icon}</span>
+              <div>
+                <div style={{fontSize:12,fontWeight:700,color:NAVY}}>{device.label} détecté</div>
+                <div style={{fontSize:11,color:"#718096",marginTop:1,lineHeight:1.5}}>{device.tip}</div>
+                {device.hello&&<div style={{fontSize:11,color:"#B7791F",fontWeight:700,marginTop:3}}>⚠️ Windows Hello doit être activé dans vos paramètres Windows</div>}
+              </div>
+            </div>
+
+            {/* Bouton biométrie principal */}
+            {!showPinFallback&&(
+              <>
+                <button onClick={doBio} disabled={bioState==="scanning"}
+                  style={{width:"100%",background:bioState==="scanning"?`${NAVY}08`:bioState==="error"?"#FFF5F5":`linear-gradient(135deg,${NAVY},${NAVYLT})`,border:`2px solid ${bioState==="error"?"#FEB2B2":NAVY}`,borderRadius:20,padding:"1.5rem",cursor:bioState==="scanning"?"wait":"pointer",marginBottom:14,transition:"all 0.2s"}}>
+                  <div style={{fontSize:52,marginBottom:8}}>
+                    {bioState==="scanning"?"⏳":bioState==="error"?"❌":"🔐"}
+                  </div>
+                  <div style={{color:bioState==="scanning"?NAVY:bioState==="error"?"#C53030":"#fff",fontWeight:800,fontSize:16}}>
+                    {bioState==="scanning"?"Vérification en cours…":bioState==="error"?"Réessayer":"Valider avec "+device.bio}
+                  </div>
+                  <div style={{color:bioState==="scanning"?`${NAVY}80`:bioState==="error"?"#C53030":"rgba(255,255,255,0.65)",fontSize:12,marginTop:4}}>
+                    {bioState==="scanning"?"Suivez les instructions de votre appareil":bioState==="error"?"Appuyez pour retenter":"Appuyez puis suivez l'invite de votre appareil"}
+                  </div>
+                </button>
+
+                {/* ── Message d'erreur contextuel enrichi ── */}
+                {err&&(
+                  <div style={{background:"#FFF5F5",border:"1.5px solid #FEB2B2",borderRadius:12,padding:"0.85rem 1rem",marginBottom:12,textAlign:"left"}}>
+                    <div style={{fontWeight:700,color:"#C53030",fontSize:13,marginBottom:6}}>⚠️ {err}</div>
+                    {/* Aide contextuelle selon l'erreur et l'appareil */}
+                    {err.includes("annulé")&&(
+                      <div style={{fontSize:12,color:"#718096",lineHeight:1.6}}>
+                        Vous avez annulé la demande. Appuyez à nouveau sur le bouton et suivez l'invite de {device.label}.
+                      </div>
+                    )}
+                    {err.includes("non reconnu")&&(
+                      <div style={{fontSize:12,color:"#718096",lineHeight:1.6}}>
+                        Cet identifiant biométrique n'est pas reconnu sur <strong>{device.label}</strong>.<br/>
+                        {device.type==="win"&&"→ La biométrie a peut-être été configurée sur un autre PC. "}
+                        {device.type==="ios"&&"→ La biométrie a peut-être été configurée sur un autre iPhone. "}
+                        Utilisez votre code PIN pour vous connecter, puis reconfigurez la biométrie depuis votre profil.
+                      </div>
+                    )}
+                    {device.type==="win"&&!err.includes("annulé")&&!err.includes("non reconnu")&&(
+                      <div style={{fontSize:12,color:"#B7791F",lineHeight:1.6,marginTop:4}}>
+                        💡 <strong>Sur PC Windows :</strong> vérifiez que <em>Windows Hello</em> est activé dans<br/>
+                        Paramètres → Comptes → Options de connexion
+                      </div>
+                    )}
+                    {(device.type==="android"||device.type==="ios")&&!err.includes("annulé")&&!err.includes("non reconnu")&&(
+                      <div style={{fontSize:12,color:"#718096",lineHeight:1.6,marginTop:4}}>
+                        💡 Vérifiez que le déverrouillage biométrique est activé dans les paramètres de votre téléphone.
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <button onClick={()=>{setShowPinFallback(true);setErr("");setBioState("idle");}}
+                  style={{background:"none",border:"none",color:"#A0AEC0",fontSize:13,cursor:"pointer",textDecoration:"underline",marginTop:4}}>
+                  Utiliser le code PIN à la place
+                </button>
+              </>
+            )}
+
+            {/* Fallback PIN */}
+            {showPinFallback&&(
+              <>
+                <div style={{background:"#FFFAF0",border:"1px solid #F6AD55",borderRadius:10,padding:"8px 12px",marginBottom:14,fontSize:12,color:"#B7791F",fontWeight:600,textAlign:"left"}}>
+                  💡 Code PIN de secours — fonctionne sur tous les appareils
+                </div>
+                <Inp label="Code PIN (secours)" type="password" maxLength={4} value={pin}
+                  onChange={e=>{setPin(e.target.value);setErr("");}}
+                  onKeyDown={e=>e.key==="Enter"&&pin.length===4&&doLogin()}
+                  placeholder="••••" xstyle={{fontSize:28,textAlign:"center",letterSpacing:12,fontWeight:700}}/>
+                {err&&<div style={{background:"#FFF5F5",border:"1.5px solid #FEB2B2",borderRadius:10,padding:"0.75rem 1rem",color:"#C53030",fontSize:13,marginBottom:14,fontWeight:600}}>⚠️ {err}</div>}
+                <Btn onClick={doLogin} disabled={pin.length<4||locked}>✓ Se connecter</Btn>
+                <button onClick={()=>{setShowPinFallback(false);setErr("");}}
+                  style={{background:"none",border:"none",color:"#A0AEC0",fontSize:13,cursor:"pointer",textDecoration:"underline",marginTop:10,width:"100%"}}>
+                  ← Retour à la biométrie
+                </button>
+              </>
+            )}
+          </Card>
+        )}
+
+        {/* ── ÉTAPE 2b : Enregistrement biométrique (1ère fois) ── */}
+        {step==="register"&&sel&&(
+          <Card style={{marginTop:"1rem",textAlign:"center"}}>
+            {sel.photo
+              ?<div style={{width:72,height:72,borderRadius:"50%",overflow:"hidden",margin:"0 auto 1rem",border:`3px solid ${NAVY}20`}}><img src={sel.photo} style={{width:"100%",height:"100%",objectFit:"cover"}}/></div>
+              :<div style={{width:72,height:72,borderRadius:"50%",background:`${MAG}15`,display:"flex",alignItems:"center",justifyContent:"center",fontWeight:800,fontSize:24,color:MAG,margin:"0 auto 1rem"}}>{initials(sel.name)}</div>
+            }
+            <p style={{fontWeight:800,fontSize:19,color:NAVY,margin:"0 0 4px"}}>{sel.name}</p>
+            <p style={{color:"#718096",fontSize:13,margin:"0 0 1rem",lineHeight:1.6}}>
+              Configurez votre {device.bio}<br/>pour des connexions rapides et sécurisées.
+            </p>
+
+            {/* Bulle info appareil */}
+            <div style={{background:`${NAVY}06`,border:`1px solid ${NAVY}12`,borderRadius:12,padding:"10px 14px",marginBottom:"1.25rem",textAlign:"left",display:"flex",gap:10,alignItems:"flex-start"}}>
+              <span style={{fontSize:20,flexShrink:0,marginTop:1}}>{device.icon}</span>
+              <div>
+                <div style={{fontSize:12,fontWeight:700,color:NAVY,marginBottom:4}}>{device.label} — que va-t-il se passer ?</div>
+                <div style={{fontSize:12,color:"#718096",lineHeight:1.7}}>
+                  {device.type==="ios"&&<>Votre iPhone / iPad va afficher une invite <strong>Face ID</strong> ou <strong>Touch ID</strong>. Appuyez sur "Continuer" puis validez.</>}
+                  {device.type==="android"&&<>Votre téléphone va afficher une invite de <strong>déverrouillage biométrique</strong>. Posez votre doigt sur le capteur ou regardez l'écran.</>}
+                  {device.type==="mac"&&<>Votre Mac va demander une validation <strong>Touch ID</strong>. Posez votre doigt sur le capteur de votre clavier ou trackpad.</>}
+                  {device.type==="win"&&<><strong>Windows Hello</strong> va s'ouvrir. Choisissez votre empreinte, reconnaissance faciale ou code PIN Windows.<br/><span style={{color:"#B7791F",fontWeight:600}}>⚠️ Windows Hello doit être préalablement configuré dans Paramètres → Comptes → Options de connexion.</span></>}
+                  {device.type==="other"&&<>Votre navigateur va proposer une méthode d'authentification disponible sur cet appareil.</>}
+                </div>
+              </div>
+            </div>
+
+            <button onClick={doRegisterBio} disabled={bioState==="registering"}
+              style={{width:"100%",background:`linear-gradient(135deg,${NAVY},${NAVYLT})`,border:"none",borderRadius:20,padding:"1.5rem",cursor:bioState==="registering"?"wait":"pointer",marginBottom:14}}>
+              <div style={{fontSize:52,marginBottom:8}}>{bioState==="registering"?"⏳":"👆"}</div>
+              <div style={{color:"#fff",fontWeight:800,fontSize:16}}>{bioState==="registering"?"Enregistrement…":"Activer "+device.bio}</div>
+              <div style={{color:"rgba(255,255,255,0.65)",fontSize:12,marginTop:4}}>Une seule fois sur cet appareil</div>
+            </button>
+            {err&&(
+              <div style={{background:"#FFF5F5",border:"1.5px solid #FEB2B2",borderRadius:12,padding:"0.85rem 1rem",marginBottom:14,textAlign:"left"}}>
+                <div style={{fontWeight:700,color:"#C53030",fontSize:13,marginBottom:4}}>⚠️ {err}</div>
+                {device.type==="win"&&<div style={{fontSize:12,color:"#B7791F",lineHeight:1.6}}>Sur PC Windows, allez dans <strong>Paramètres → Comptes → Options de connexion</strong> pour configurer Windows Hello avant d'activer la biométrie ici.</div>}
+                {(device.type==="ios"||device.type==="android")&&<div style={{fontSize:12,color:"#718096",lineHeight:1.6}}>Vérifiez que la biométrie est activée dans les paramètres de votre téléphone, puis réessayez.</div>}
+              </div>
+            )}
+            <button onClick={()=>setStep("pin")} style={{background:"none",border:"none",color:"#A0AEC0",fontSize:13,cursor:"pointer",textDecoration:"underline"}}>
+              Passer — utiliser le code PIN
+            </button>
+          </Card>
+        )}
+
+        {/* ── ÉTAPE 2c : PIN classique (pas de biométrie configurée) ── */}
+        {step==="pin"&&sel&&(
           <Card style={{marginTop:"1rem"}}>
             <div style={{textAlign:"center",marginBottom:"1.75rem"}}>
-              <div style={{width:60,height:60,borderRadius:"50%",background:`${MAG}15`,display:"flex",alignItems:"center",justifyContent:"center",fontWeight:800,fontSize:20,color:MAG,margin:"0 auto 1rem"}}>{initials(sel.name)}</div>
+              {sel.photo
+                ?<div style={{width:60,height:60,borderRadius:"50%",overflow:"hidden",margin:"0 auto 1rem",border:`2px solid ${NAVY}20`}}><img src={sel.photo} style={{width:"100%",height:"100%",objectFit:"cover"}}/></div>
+                :<div style={{width:60,height:60,borderRadius:"50%",background:`${MAG}15`,display:"flex",alignItems:"center",justifyContent:"center",fontWeight:800,fontSize:20,color:MAG,margin:"0 auto 1rem"}}>{initials(sel.name)}</div>
+              }
               <p style={{fontWeight:800,fontSize:19,color:NAVY,margin:0}}>{sel.name}</p>
               <p style={{color:"#A0AEC0",fontSize:13,margin:"4px 0 0"}}>Entrez votre code PIN à 4 chiffres</p>
             </div>
-            <Inp label="Code PIN" type="password" maxLength={4} value={pin} onChange={e=>{setPin(e.target.value);setErr("");}} onKeyDown={e=>e.key==="Enter"&&pin.length===4&&doLogin()} placeholder="••••" xstyle={{fontSize:28,textAlign:"center",letterSpacing:12,fontWeight:700}}/>
+            <Inp label="Code PIN" type="password" maxLength={4} value={pin}
+              onChange={e=>{setPin(e.target.value);setErr("");}}
+              onKeyDown={e=>e.key==="Enter"&&pin.length===4&&doLogin()}
+              placeholder="••••" xstyle={{fontSize:28,textAlign:"center",letterSpacing:12,fontWeight:700}}/>
             {err&&<div style={{background:"#FFF5F5",border:"1.5px solid #FEB2B2",borderRadius:10,padding:"0.75rem 1rem",color:"#C53030",fontSize:13,marginBottom:14,fontWeight:600}}>⚠️ {err}</div>}
-            <Btn onClick={doLogin} disabled={pin.length<4}>✓ Se connecter</Btn>
+            <Btn onClick={doLogin} disabled={pin.length<4||locked}>✓ Se connecter</Btn>
+            {bioAvail&&!sel.credentialId&&(
+              <button onClick={()=>setStep("register")}
+                style={{width:"100%",marginTop:12,background:`${NAVY}08`,border:`1.5px solid ${NAVY}20`,borderRadius:12,padding:"10px",fontSize:13,fontWeight:700,color:NAVY,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
+                🔐 Activer la biométrie sur cet appareil
+              </button>
+            )}
           </Card>
         )}
+
       </div>
     </div>
   );
@@ -365,7 +706,22 @@ function AbsForm({initial,onSave,onCancel}){
   const[form,setForm]=useState({...def,...(initial&&initial.absType?initial:{})});
   const set=k=>v=>setForm(f=>({...f,[k]:v}));
   const typ=at(form.absType);
-  const nb=form.halfDay==="half"?0.5:Math.max(1,daysBetween(form.dateStart,form.dateEnd||form.dateStart));
+  // F2 — calcul nbDays excluant weekends et jours fériés (sauf maladie = tous les jours)
+  const nb=(()=>{
+    if(form.halfDay==="half")return 0.5;
+    const excludeWE=form.absType!=="mal"&&form.absType!=="accd";
+    let count=0;
+    let cur=new Date(form.dateStart);
+    const end=new Date(form.dateEnd||form.dateStart);
+    while(cur<=end){
+      const ds=cur.toISOString().slice(0,10);
+      const wd=cur.getDay();
+      const isWE=wd===0||wd===6;
+      if(!excludeWE||(excludeWE&&!isWE&&!isFerie(ds)))count++;
+      cur.setDate(cur.getDate()+1);
+    }
+    return Math.max(1,count);
+  })();
   return(
     <Card style={{marginBottom:"1rem",border:`2px solid ${typ.color}40`}}>
       <h3 style={{fontSize:15,fontWeight:800,color:typ.color,margin:"0 0 1.25rem",display:"flex",alignItems:"center",gap:8}}>
@@ -399,10 +755,11 @@ function AbsForm({initial,onSave,onCancel}){
          </div>
       }
       <Inp label="Commentaire (optionnel)" value={form.note} onChange={e=>set("note")(e.target.value)} placeholder="Médecin, destination, motif…"/>
-      <div style={{background:typ.bg,border:`1.5px solid ${typ.color}30`,borderRadius:12,padding:"0.85rem 1rem",marginBottom:16,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+      <div style={{background:typ.bg,border:`1.5px solid ${typ.color}30`,borderRadius:12,padding:"0.85rem 1rem",marginBottom:8,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
         <div style={{display:"flex",alignItems:"center",gap:8}}><span style={{fontSize:20}}>{typ.icon}</span><span style={{color:typ.color,fontWeight:700,fontSize:14}}>{typ.label}</span></div>
         <span style={{color:typ.color,fontWeight:800,fontSize:20}}>{nb} jour{nb>1?"s":""}</span>
       </div>
+      {form.halfDay!=="half"&&form.absType!=="mal"&&form.absType!=="accd"&&<div style={{background:"#EBF8FF",borderRadius:8,padding:"5px 10px",fontSize:11,color:"#2B6CB0",fontWeight:600,marginBottom:12}}>ℹ️ Week-ends et jours fériés exclus automatiquement</div>}
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
         <Btn variant="outline" onClick={onCancel}>Annuler</Btn>
         <Btn onClick={()=>onSave({...form,type:"absence",nbDays:nb})} disabled={!form.dateStart}>Enregistrer</Btn>
@@ -411,14 +768,15 @@ function AbsForm({initial,onSave,onCancel}){
   );
 }
 
-// ── TABLEAU DE BORD SALARIÉ ───────────────────────────────────────────────────
-// ── PROFIL ÉDITABLE SALARIÉ (PIN + photo) ────────────────────────────────────
+// ── PROFIL ÉDITABLE SALARIÉ ───────────────────────────────────────────────────
 function ProfileEdit({employee,onSave,onClose,onExport,ym}){
   const[pin,setPin]=useState(employee.pin||"");
   const[photo,setPhoto]=useState(employee.photo||"");
   const[saving,setSaving]=useState(false);
   const[err,setErr]=useState("");
   const[saved,setSaved]=useState(false);
+  const[bioState,setBioState]=useState("idle"); // idle | registering | done | error
+  const hasBio=!!employee.credentialId;
 
   function handlePhoto(e){
     const file=e.target.files[0];if(!file)return;
@@ -441,14 +799,32 @@ function ProfileEdit({employee,onSave,onClose,onExport,ym}){
 
   async function handleSave(){
     if(!/^\d{4}$/.test(pin)){setErr("Le PIN doit faire exactement 4 chiffres.");return;}
-    if(typeof onCheckPin==="function"){
-      const conflict=onCheckPin(pin,employee.id);
-      if(conflict){setErr(`Ce PIN est déjà utilisé par ${conflict}.`);return;}
-    }
     setSaving(true);setErr("");
     await onSave({pin,photo});
     setSaving(false);setSaved(true);
     setTimeout(()=>setSaved(false),2500);
+  }
+
+  async function handleRegisterBio(){
+    if(!waSupported()){setErr("WebAuthn non supporté sur cet appareil.");return;}
+    setBioState("registering");setErr("");
+    try{
+      const credId=await waRegister(employee.id,employee.name);
+      await onSave({credentialId:credId});
+      setBioState("done");
+      adminLog("ENREG_BIO_PROFIL",`${employee.name} — biométrie configurée`);
+      setTimeout(()=>setBioState("idle"),3000);
+    }catch(e){
+      setBioState("error");
+      setErr(e.name==="NotAllowedError"?"Enregistrement annulé.":"Erreur : "+e.message);
+    }
+  }
+
+  async function handleResetBio(){
+    if(!window.confirm("Supprimer la biométrie de cet appareil ?\n\nVous devrez utiliser votre code PIN pour vous reconnecter."))return;
+    await onSave({credentialId:""});
+    setBioState("idle");
+    adminLog("RESET_BIO_PROFIL",`${employee.name} — biométrie réinitialisée`);
   }
 
   return(
@@ -457,6 +833,8 @@ function ProfileEdit({employee,onSave,onClose,onExport,ym}){
         <div style={{fontWeight:800,fontSize:15,color:NAVY}}>👤 Mon profil</div>
         <button onClick={onClose} style={{background:"none",border:"none",color:"#A0AEC0",fontSize:20,cursor:"pointer",lineHeight:1}}>×</button>
       </div>
+
+      {/* Photo */}
       <div style={{display:"flex",alignItems:"center",gap:16,marginBottom:"1rem"}}>
         <div style={{position:"relative",flexShrink:0}}>
           {photo
@@ -474,8 +852,35 @@ function ProfileEdit({employee,onSave,onClose,onExport,ym}){
           {employee.entryDate&&<div style={{fontSize:12,color:"#718096",marginTop:4}}>📅 Entrée : {fmtDate(employee.entryDate)}</div>}
         </div>
       </div>
-      <Inp label="Nouveau code PIN (4 chiffres)" type="password" maxLength={4} value={pin} onChange={e=>{setPin(e.target.value);setErr("");setSaved(false);}} placeholder="••••" xstyle={{fontSize:24,textAlign:"center",letterSpacing:10,fontWeight:700}}/>
-      {err&&<div style={{background:"#FFF5F5",border:"1.5px solid #FEB2B2",borderRadius:10,padding:"0.6rem 1rem",color:"#C53030",fontSize:13,marginBottom:10,fontWeight:600}}>⚠️ {err}</div>}
+
+      {/* Biométrie */}
+      {waSupported()&&(
+        <div style={{background:hasBio?"#F0FFF4":"#F7F9FC",border:`1.5px solid ${hasBio?"#9AE6B4":"#E2E8F0"}`,borderRadius:12,padding:"0.85rem 1rem",marginBottom:14}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}>
+            <div style={{display:"flex",alignItems:"center",gap:10}}>
+              <span style={{fontSize:22}}>{hasBio?"🔐":"🔓"}</span>
+              <div>
+                <div style={{fontWeight:700,fontSize:13,color:hasBio?"#276749":NAVY}}>{hasBio?"Biométrie active":"Biométrie non configurée"}</div>
+                <div style={{fontSize:11,color:"#718096",marginTop:1}}>{hasBio?"Empreinte / Face ID activé sur cet appareil":"Activez pour des connexions rapides"}</div>
+              </div>
+            </div>
+            {hasBio
+              ?<button onClick={handleResetBio} style={{background:"#FFF5F5",border:"1px solid #FEB2B2",borderRadius:8,padding:"5px 10px",fontSize:11,color:"#C53030",cursor:"pointer",fontWeight:700,flexShrink:0}}>Réinitialiser</button>
+              :<button onClick={handleRegisterBio} disabled={bioState==="registering"} style={{background:NAVY,border:"none",borderRadius:8,padding:"6px 12px",fontSize:12,color:"#fff",cursor:"pointer",fontWeight:700,flexShrink:0,whiteSpace:"nowrap"}}>
+                {bioState==="registering"?"⏳ …":"👆 Activer"}
+              </button>
+            }
+          </div>
+          {bioState==="done"&&<div style={{marginTop:8,fontSize:12,color:"#276749",fontWeight:700}}>✅ Biométrie enregistrée avec succès !</div>}
+          {bioState==="error"&&err&&<div style={{marginTop:8,fontSize:12,color:"#C53030",fontWeight:600}}>⚠️ {err}</div>}
+        </div>
+      )}
+
+      {/* PIN */}
+      <Inp label="Nouveau code PIN (4 chiffres)" type="password" maxLength={4} value={pin}
+        onChange={e=>{setPin(e.target.value);setErr("");setSaved(false);}}
+        placeholder="••••" xstyle={{fontSize:24,textAlign:"center",letterSpacing:10,fontWeight:700}}/>
+      {err&&bioState==="idle"&&<div style={{background:"#FFF5F5",border:"1.5px solid #FEB2B2",borderRadius:10,padding:"0.6rem 1rem",color:"#C53030",fontSize:13,marginBottom:10,fontWeight:600}}>⚠️ {err}</div>}
       {saved&&<div style={{background:"#F0FFF4",border:"1.5px solid #9AE6B4",borderRadius:10,padding:"0.6rem 1rem",color:"#276749",fontSize:13,marginBottom:10,fontWeight:600}}>✅ Profil mis à jour !</div>}
       <Btn onClick={handleSave} disabled={saving}>{saving?"Sauvegarde…":"💾 Enregistrer"}</Btn>
       <button onClick={onExport} style={{width:"100%",marginTop:10,background:`linear-gradient(135deg,${NAVY},${NAVYLT})`,color:"#fff",border:"none",borderRadius:12,padding:"11px",fontSize:13,fontWeight:700,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
@@ -489,6 +894,7 @@ function EmpDash({employee,employees,onLogout,onEmpUpdate}){
   const[entries,setEntries]=useState([]);
   const[loading,setLoading]=useState(true);
   const[saving,setSaving]=useState(false);
+  const[syncError,setSyncError]=useState(false); // D4 — alerte sync
   const[ym,setYm]=useState(getYM());
   const[mode,setMode]=useState(null);
   const[editEntry,setEditEntry]=useState(null);
@@ -503,8 +909,8 @@ function EmpDash({employee,employees,onLogout,onEmpUpdate}){
     function fmtWeek(mon){const[y,m,d]=mon.split("-");const mo=new Date(Number(y),Number(m)-1,Number(d));const su=new Date(mo);su.setDate(mo.getDate()+6);const p=n=>String(n).padStart(2,"0");return`S${getWeekNum(mo)} — ${p(mo.getDate())}/${p(mo.getMonth()+1)} au ${p(su.getDate())}/${p(su.getMonth()+1)}/${su.getFullYear()}`;}
     function fmtHL(h){const hh=Math.floor(Math.abs(h)),mm=Math.round((Math.abs(h)-hh)*60);return`${h<0?"-":""}${hh}h${String(mm).padStart(2,"0")}`;}
 
-    Promise.all(monthsSinceStart().map(m=>sg(`fp:${employee.id}:${m}`).then(d=>d||[]))).then(results=>{
-      const all=results.flat();
+    Promise.all(monthsSinceStart().map(m=>sg(`fp:${employee.id}:${m}`).then(d=>({m,data:d||[]})))).then(results=>{
+      const all=results.flatMap(r=>r.data);
       if(!all.length){alert("Aucune donnée à exporter.");return;}
 
       const wm={};
@@ -545,14 +951,38 @@ function EmpDash({employee,employees,onLogout,onEmpUpdate}){
         else{sheet2.push([fmtDate(ds),jour,"Travail",e.startTime,e.endTime,e.breakMin||"0",fmtHL(calcH(e.startTime,e.endTime,e.breakMin)),e.note||"","",""]);}
       });
 
+      // F4 — Onglet Tickets & Paniers par mois
+      const mealT=employee.mealType||"ticket";
+      const mealLabel=mealT==="panier"?"🧺 Panier repas":"🎟 Ticket restaurant";
+      const sheet3=[
+        [`TICKETS & PANIERS — ${employee.name.toUpperCase()}`,"","",""],
+        [`Type d'avantage : ${mealLabel}`,"","",""],
+        [""],
+        ["Mois","Jours travaillés",mealT==="ticket"?"Tickets":"Paniers","Cumul"],
+      ];
+      let cumul=0;
+      results.sort((a,b)=>a.m.localeCompare(b.m)).forEach(({m,data})=>{
+        if(!data.length)return;
+        const workD=data.filter(e=>e.type==="work"||!e.type);
+        const jours=new Set(workD.map(e=>e.date).filter(Boolean)).size;
+        if(jours===0)return;
+        cumul+=jours;
+        sheet3.push([fmtYM(m),jours,jours,cumul]);
+      });
+      sheet3.push(["TOTAL",cumul,cumul,""]);
+
       const wb=XLSX.utils.book_new();
       const ws1=XLSX.utils.aoa_to_sheet(sheet1);
       const ws2=XLSX.utils.aoa_to_sheet(sheet2);
+      const ws3=XLSX.utils.aoa_to_sheet(sheet3);
       ws1["!cols"]=[{wch:36},{wch:20},{wch:13},{wch:28},{wch:22},{wch:14},{wch:14}];
       ws2["!cols"]=[{wch:30},{wch:8},{wch:10},{wch:12},{wch:12},{wch:12},{wch:18},{wch:26},{wch:22},{wch:12}];
+      ws3["!cols"]=[{wch:22},{wch:18},{wch:18},{wch:12}];
       XLSX.utils.book_append_sheet(wb,ws1,"Synthèse hebdo");
       XLSX.utils.book_append_sheet(wb,ws2,"Détail journalier");
+      XLSX.utils.book_append_sheet(wb,ws3,"Tickets & Paniers");
       XLSX.writeFile(wb,`mes_heures_${employee.name.replace(/ /g,"_")}.xlsx`);
+      adminLog("EXPORT_EMPLOYE",`${employee.name} — export personnel`);
     });
   }
 
@@ -562,17 +992,20 @@ function EmpDash({employee,employees,onLogout,onEmpUpdate}){
   },[key]);
 
   async function save(form){
-    setSaving(true);
-    const entry={...form,id:editEntry?.id||`e${Date.now()}`};
+    setSaving(true);setSyncError(false);
+    // D2 — timestamp sur chaque entrée
+    const entry={...form,id:editEntry?.id||`e${Date.now()}`,updatedAt:Date.now()};
     const next=editEntry?entries.map(e=>e.id===editEntry.id?entry:e):[...entries,entry].sort((a,b)=>(a.date||a.dateStart).localeCompare(b.date||b.dateStart));
     setEntries(next);
-    await ss(key,next);
+    // D1 — safeSave avec merge anti-écrasement
+    await safeSave(key,next,()=>setSyncError(true));
     setSaving(false);setMode(null);setEditEntry(null);
   }
   async function del(id){
+    setSyncError(false);
     const next=entries.filter(e=>e.id!==id);
     setEntries(next);
-    await ss(key,next);
+    await safeSave(key,next,()=>setSyncError(true));
   }
 
   const work=entries.filter(e=>e.type==="work"||!e.type);
@@ -580,6 +1013,18 @@ function EmpDash({employee,employees,onLogout,onEmpUpdate}){
   const totalH=work.reduce((s,e)=>s+calcH(e.startTime,e.endTime,e.breakMin),0);
   const totalAbsDays=abs.reduce((s,e)=>s+Number(e.nbDays||1),0);
   const shown=filter==="work"?work:filter==="absence"?abs:entries;
+
+  // F1 — Vue semaine : calcul des heures de la semaine courante
+  const weekH=(()=>{
+    const now=new Date();const wd=now.getDay()||7;
+    const mon=new Date(now);mon.setDate(now.getDate()-(wd-1));
+    const sun=new Date(mon);sun.setDate(mon.getDate()+6);
+    const toStr=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+    const monS=toStr(mon),sunS=toStr(sun);
+    return work.filter(e=>e.date>=monS&&e.date<=sunS).reduce((s,e)=>s+calcH(e.startTime,e.endTime,e.breakMin),0);
+  })();
+  const weekTarget=35;
+  const weekRemain=Math.max(0,weekTarget-weekH);
 
   return(
     <div style={{minHeight:"100vh",background:"#F4F6FA",paddingBottom:"2rem"}}>
@@ -595,7 +1040,10 @@ function EmpDash({employee,employees,onLogout,onEmpUpdate}){
               <div style={{color:"#fff",fontWeight:800,fontSize:17}}>{employee.name}</div>
             </div>
           </div>
-          <div style={{display:"flex",gap:8}}>
+          <div style={{display:"flex",gap:8,alignItems:"center"}}>
+            {/* D4 — Indicateur sync */}
+            {syncError&&<div title="Erreur de synchronisation" style={{background:"rgba(197,48,48,0.3)",border:"1px solid rgba(197,48,48,0.5)",borderRadius:8,padding:"5px 9px",fontSize:11,color:"#FEB2B2",fontWeight:700}}>⚠️ Sync KO</div>}
+            {saving&&<div style={{background:"rgba(72,187,120,0.2)",border:"1px solid rgba(72,187,120,0.3)",borderRadius:8,padding:"5px 9px",fontSize:11,color:"#9AE6B4",fontWeight:700}}>⟳ Sync…</div>}
             <button onClick={()=>setShowProfile(p=>!p)} style={{background:"rgba(255,255,255,0.12)",border:"1px solid rgba(255,255,255,0.2)",borderRadius:10,padding:"7px 13px",color:"#fff",fontSize:12,cursor:"pointer",fontWeight:600}}>👤 Profil</button>
             <button onClick={onLogout} style={{background:"rgba(255,255,255,0.12)",border:"1px solid rgba(255,255,255,0.2)",borderRadius:10,padding:"7px 13px",color:"#fff",fontSize:12,cursor:"pointer",fontWeight:600}}>Déconnexion</button>
           </div>
@@ -619,6 +1067,20 @@ function EmpDash({employee,employees,onLogout,onEmpUpdate}){
                 <div style={{fontSize:9,color:"#718096",marginTop:2,fontWeight:700,letterSpacing:0.3}}>{l}</div>
               </div>
             ))}
+          </div>
+          {/* F1 — Vue semaine courante */}
+          <div style={{background:`linear-gradient(135deg,${NAVY}08,${MAG}06)`,borderRadius:12,padding:"0.7rem 1rem",marginBottom:"0.75rem",display:"flex",alignItems:"center",justifyContent:"space-between",border:`1px solid ${NAVY}10`}}>
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <span style={{fontSize:14}}>📅</span>
+              <div>
+                <div style={{fontSize:10,fontWeight:700,color:"#718096",letterSpacing:0.4}}>SEMAINE EN COURS</div>
+                <div style={{fontSize:13,fontWeight:800,color:NAVY}}>{fmtH(weekH)} <span style={{fontWeight:500,color:"#718096",fontSize:11}}>/ {weekTarget}h</span></div>
+              </div>
+            </div>
+            <div style={{textAlign:"right"}}>
+              <div style={{fontSize:10,fontWeight:700,color:weekRemain===0?"#276749":"#B7791F",letterSpacing:0.4}}>{weekRemain===0?"✓ OBJECTIF ATTEINT":"RESTANT"}</div>
+              <div style={{fontSize:13,fontWeight:800,color:weekRemain===0?"#276749":"#B7791F"}}>{weekRemain===0?"":fmtH(weekRemain)}</div>
+            </div>
           </div>
           <div style={{display:"flex",gap:8,overflowX:"auto",paddingBottom:2}}>
             {months.map(m=>(
@@ -715,7 +1177,15 @@ function EmpDash({employee,employees,onLogout,onEmpUpdate}){
 function AdminLogin({onLogin,onBack}){
   const[pass,setPass]=useState("");
   const[err,setErr]=useState("");
-  function doLogin(){if(pass===ADMIN_PASS)onLogin();else{setErr("Mot de passe incorrect.");setPass("");}}
+  const[checking,setChecking]=useState(false);
+  async function doLogin(){
+    if(!pass)return;
+    setChecking(true);
+    const h=await sha256(pass);
+    if(h===ADMIN_HASH){onLogin();}
+    else{setErr("Mot de passe incorrect.");setPass("");}
+    setChecking(false);
+  }
   return(
     <div style={{minHeight:"100vh",background:`linear-gradient(155deg,${NAVYDK},${NAVYLT})`,display:"flex",alignItems:"center",justifyContent:"center",padding:"2rem"}}>
       <div style={{background:"#fff",borderRadius:24,padding:"2rem",width:"100%",maxWidth:380,boxShadow:"0 24px 64px rgba(0,0,0,0.35)"}}>
@@ -727,7 +1197,7 @@ function AdminLogin({onLogin,onBack}){
         </div>
         <Inp label="Mot de passe" type="password" value={pass} onChange={e=>{setPass(e.target.value);setErr("");}} onKeyDown={e=>e.key==="Enter"&&pass&&doLogin()} placeholder="Mot de passe administrateur"/>
         {err&&<div style={{background:"#FFF5F5",border:"1.5px solid #FEB2B2",borderRadius:10,padding:"0.75rem 1rem",color:"#C53030",fontSize:13,marginBottom:14,fontWeight:600}}>⚠️ {err}</div>}
-        <Btn onClick={doLogin} disabled={!pass}>Accéder au back office</Btn>
+        <Btn onClick={doLogin} disabled={!pass||checking}>{checking?"Vérification…":"Accéder au back office"}</Btn>
       </div>
     </div>
   );
@@ -777,12 +1247,13 @@ function EmpManager({employees,onUpdate}){
     setSaving(true);
     let next;
     const data={name:form.name.trim(),pin:form.pin,contractType:form.contractType,entryDate:form.entryDate,photo:form.photo,email:form.email||'',phone:form.phone||'',mealType:form.mealType||"ticket"};
-    if(editId){next=employees.map(emp=>emp.id===editId?{...emp,...data}:emp);showToast("✓ Modifié et synchronisé");}
-    else{next=[...employees,{id:`emp_${Date.now()}`,...data}];showToast("✓ Ajouté et synchronisé");}
+    if(editId){next=employees.map(emp=>emp.id===editId?{...emp,...data}:emp);showToast("✓ Modifié et synchronisé");adminLog("MODIF_EMPLOYE",`${data.name} (${editId})`);}
+    else{next=[...employees,{id:`emp_${Date.now()}`,...data}];showToast("✓ Ajouté et synchronisé");adminLog("AJOUT_EMPLOYE",data.name);}
     await ss("fp:employees",next);
     onUpdate(next);setForm(emptyForm);setEditId(null);setErr("");setSaving(false);
   }
   async function delEmp(id){
+    const emp=employees.find(e=>e.id===id);
     const months=monthsSinceStart();
     let hasData=false;
     for(const m of months){
@@ -790,12 +1261,15 @@ function EmpManager({employees,onUpdate}){
       if(d&&d.length>0){hasData=true;break;}
     }
     if(hasData){
-      const ok=window.confirm("⚠️ Ce salarié a des heures enregistrées. Supprimer quand même ?\n\nSes données d'heures resteront dans Google Sheets mais ne seront plus accessibles.");
+      const ok=window.confirm("⚠️ Ce salarié a des heures enregistrées.\n\nIl sera archivé (soft delete) pour conserver ses données.\nSes données restent accessibles dans les rapports.");
       if(!ok){setConfirmDel(null);return;}
     }
-    const next=employees.filter(e=>e.id!==id);
+    // D3 — Soft delete : on marque deleted:true au lieu de supprimer
+    const next=employees.map(e=>e.id===id?{...e,deleted:true,archived:true,deletedAt:new Date().toISOString()}:e);
     await ss("fp:employees",next);
-    onUpdate(next);setConfirmDel(null);showToast("Supprimé");
+    onUpdate(next);setConfirmDel(null);showToast("Salarié archivé (données conservées)");
+    // F3 — Log admin
+    adminLog("SUPPRESSION_EMPLOYE",`${emp?.name} (${id}) — soft delete`);
   }
 
   return(
@@ -923,6 +1397,7 @@ function EmpManager({employees,onUpdate}){
                     </div>
                     <div style={{display:"flex",gap:6}}>
                       {!emp.archived&&<button onClick={()=>{setEditId(emp.id);setForm({name:emp.name,pin:emp.pin,contractType:emp.contractType||"cdi",entryDate:emp.entryDate||"",photo:emp.photo||"",email:emp.email||"",phone:emp.phone||"",mealType:emp.mealType||"ticket"});setErr("");}} style={{background:isE?`${MAG}15`:`${NAVY}10`,border:"none",borderRadius:9,padding:"6px 12px",fontSize:12,color:isE?MAG:NAVY,cursor:"pointer",fontWeight:700}}>✏</button>}
+                      {emp.credentialId&&!emp.archived&&<button title="Réinitialiser la biométrie" onClick={async()=>{if(!window.confirm(`Réinitialiser la biométrie de ${emp.name} ?\n\nIl/elle devra utiliser son PIN à la prochaine connexion.`))return;const next=employees.map(e=>e.id===emp.id?{...e,credentialId:""}:e);await ss("fp:employees",next);onUpdate(next);showToast("🔓 Biométrie réinitialisée");adminLog("RESET_BIO_ADMIN",`${emp.name} — reset par admin`);}} style={{background:"#FFFAF0",border:"none",borderRadius:9,padding:"6px 10px",fontSize:13,cursor:"pointer"}} >🔓</button>}
                       <button onClick={()=>toggleArchive(emp.id)} title={emp.archived?"Réactiver":"Archiver"} style={{background:emp.archived?"#F0FFF4":"#FFFAF0",border:"none",borderRadius:9,padding:"6px 10px",fontSize:13,cursor:"pointer"}}>
                         {emp.archived?"♻️":"📦"}
                       </button>
@@ -1054,6 +1529,45 @@ function MessagesPanel({employees}){
         <div style={{marginTop:12,fontSize:11,color:"#A0AEC0",textAlign:"center"}}>
           {channel==="sms"?<>Envoi via <strong>SpotHit</strong> · Configurez votre clé API dans Apps Script</>:<>Envoi via <strong>Google MailApp</strong> · lié à votre compte Google</>}
         </div>
+      </Card>
+    </div>
+  );
+}
+
+// ── JOURNAL ADMIN (F3) ────────────────────────────────────────────────────────
+function JournalPanel(){
+  const[logs,setLogs]=useState([]);
+  const[loading,setLoading]=useState(true);
+  useEffect(()=>{
+    sg("fp:admin:log").then(d=>{setLogs(d||[]);setLoading(false);}).catch(()=>setLoading(false));
+  },[]);
+  const actionColor={
+    AJOUT_EMPLOYE:"#276749",MODIF_EMPLOYE:"#2B6CB0",SUPPRESSION_EMPLOYE:"#C53030",
+    BACKUP:"#553C9A",RESTORE:"#B7791F",EXPORT:"#2F855A"
+  };
+  return(
+    <div style={{maxWidth:700,margin:"0 auto"}}>
+      <Card style={{padding:0,overflow:"hidden"}}>
+        <div style={{padding:"1.1rem 1.5rem",borderBottom:"1px solid #EDF2F7",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <span style={{fontWeight:800,color:NAVY,fontSize:15}}>📋 Journal d'activité admin</span>
+          <span style={{fontSize:12,color:"#A0AEC0"}}>{logs.length} entrée{logs.length>1?"s":""}</span>
+        </div>
+        {loading?<Spinner/>:logs.length===0?(
+          <div style={{textAlign:"center",padding:"3rem",color:"#A0AEC0"}}><div style={{fontSize:40}}>📭</div><p>Aucune action enregistrée.</p></div>
+        ):(
+          <div>
+            {logs.map((l,i)=>(
+              <div key={l.id} style={{padding:"0.85rem 1.5rem",borderBottom:i<logs.length-1?"1px solid #EDF2F7":"none",display:"flex",alignItems:"center",gap:14}}>
+                <div style={{width:8,height:8,borderRadius:"50%",background:actionColor[l.action]||"#718096",flexShrink:0}}/>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontWeight:700,fontSize:13,color:actionColor[l.action]||NAVY}}>{l.action.replace(/_/g," ")}</div>
+                  <div style={{fontSize:12,color:"#718096",marginTop:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{l.detail}</div>
+                </div>
+                <div style={{fontSize:11,color:"#A0AEC0",whiteSpace:"nowrap",flexShrink:0}}>{l.at}</div>
+              </div>
+            ))}
+          </div>
+        )}
       </Card>
     </div>
   );
@@ -1369,6 +1883,7 @@ function AdminDash({employees:initEmp,onLogout,onEmpChange}){
     XLSX.utils.book_append_sheet(wb,ws2,"Détail journalier");
     XLSX.utils.book_append_sheet(wb,ws3,"Tickets & Paniers");
     XLSX.writeFile(wb,`fermapro_${ym}.xlsx`);
+    adminLog("EXPORT_ADMIN",`Export mensuel ${fmtYM(ym)} — ${employees.length} salariés`);
   }
 
   const dEmp=detailId?employees.find(e=>e.id===detailId):null;
@@ -1378,7 +1893,7 @@ function AdminDash({employees:initEmp,onLogout,onEmpChange}){
   const dH=detailId?eTotH(detailId):0;
   const dAbsDays=detailId?eTotAbs(detailId):0;
   const dShown=detailTab==="work"?dWork:detailTab==="absence"?dAbs:dAll;
-  const TABS=[{id:"heures",icon:"📊",label:"Heures & Absences"},{id:"salaries",icon:"👥",label:"Salariés"},{id:"messages",icon:"💬",label:"Messages"}];
+  const TABS=[{id:"heures",icon:"📊",label:"Heures & Absences"},{id:"salaries",icon:"👥",label:"Salariés"},{id:"messages",icon:"💬",label:"Messages"},{id:"journal",icon:"📋",label:"Journal"}];
 
   return(
     <div style={{minHeight:"100vh",background:"#F4F6FA"}}>
@@ -1416,7 +1931,17 @@ function AdminDash({employees:initEmp,onLogout,onEmpChange}){
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"1.25rem"}}>
             <div style={{display:"flex",alignItems:"center",gap:12}}>
               <div style={{width:38,height:38,borderRadius:11,background:"rgba(255,255,255,0.15)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20}}>📊</div>
-              <div><div style={{color:"rgba(255,255,255,0.5)",fontSize:11,fontWeight:700,letterSpacing:1.2}}>FERMAPRO · BACK OFFICE</div><div style={{color:"#fff",fontWeight:800,fontSize:18}}>Administration</div></div>
+              <div>
+                <div style={{color:"rgba(255,255,255,0.5)",fontSize:11,fontWeight:700,letterSpacing:1.2}}>FERMAPRO · BACK OFFICE</div>
+                <div style={{color:"#fff",fontWeight:800,fontSize:18}}>Administration</div>
+              </div>
+              {/* D4 — Indicateur sync Admin */}
+              {GS_READY&&(
+                <div style={{display:"inline-flex",alignItems:"center",gap:5,background:loading?"rgba(246,173,85,0.2)":"rgba(72,187,120,0.2)",border:`1px solid ${loading?"rgba(246,173,85,0.4)":"rgba(72,187,120,0.4)"}`,borderRadius:12,padding:"3px 10px"}}>
+                  <div style={{width:6,height:6,borderRadius:"50%",background:loading?"#F6AD55":"#68D391"}}/>
+                  <span style={{color:loading?"#FEFCBF":"#C6F6D5",fontSize:10,fontWeight:700}}>{loading?"Chargement…":"Sheets connecté"}</span>
+                </div>
+              )}
             </div>
             <div style={{display:"flex",gap:8}}>
               <button onClick={()=>backupAll(false)} style={{background:"rgba(72,187,120,0.25)",border:"1px solid rgba(72,187,120,0.4)",borderRadius:10,padding:"7px 14px",color:"#9AE6B4",fontSize:12,cursor:"pointer",fontWeight:700}}>
@@ -1444,7 +1969,8 @@ function AdminDash({employees:initEmp,onLogout,onEmpChange}){
 
       <div style={{padding:"1.5rem",maxWidth:900,margin:"0 auto"}}>
         {tab==="salaries"?<EmpManager employees={employees} onUpdate={handleUpdate}/>:
-        tab==="messages"?<MessagesPanel employees={employees}/>:(
+        tab==="messages"?<MessagesPanel employees={employees}/>:
+        tab==="journal"?<JournalPanel/>:(
           <>
             <div style={{display:"flex",gap:10,marginBottom:"1.5rem",flexWrap:"wrap",alignItems:"center"}}>
               <select value={ym} onChange={e=>setYm(e.target.value)} style={{padding:"9px 14px",borderRadius:10,border:"1.5px solid #E2E8F0",fontSize:14,fontWeight:700,color:NAVY,background:"#fff",cursor:"pointer",outline:"none"}}>{months.map(m=><option key={m} value={m}>{fmtYM(m)}</option>)}</select>
@@ -1590,7 +2116,7 @@ function App(){
 
   if(view==="setup")     return<FirebaseSetup/>;
   if(view==="landing")   return<Landing onEmployee={()=>go("empLogin")} onAdmin={()=>go("adminLogin")} fbReady={FB_READY}/>;
-  if(view==="empLogin")  return<EmpLogin employees={employees} onLogin={e=>{setEmployee(e);go("empDash");}} onBack={()=>go("landing")}/>;
+  if(view==="empLogin")  return<EmpLogin employees={employees} onLogin={e=>{setEmployee(e);go("empDash");}} onBack={()=>go("landing")} onEmpUpdate={(emp,all)=>{setEmployee(emp);if(all)setEmployees(all);}}/>;
   if(view==="empDash")   return<EmpDash employee={employee} employees={employees} onLogout={()=>{setEmployee(null);go("landing");}} onEmpUpdate={emp=>{setEmployee(emp);setEmployees(prev=>prev.map(e=>e.id===emp.id?emp:e));}}/>; 
   if(view==="adminLogin")return<AdminLogin onLogin={()=>go("adminDash")} onBack={()=>go("landing")}/>;
   if(view==="adminDash") return<AdminDash employees={employees} onLogout={()=>go("landing")} onEmpChange={setEmployees}/>;
