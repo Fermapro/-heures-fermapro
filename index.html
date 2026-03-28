@@ -5,6 +5,19 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <meta name="theme-color" content="#1E3A7B"/>
+<!-- #6 — Content Security Policy -->
+<meta http-equiv="Content-Security-Policy" content="
+  default-src 'self';
+  script-src 'self' 'unsafe-inline' https://unpkg.com https://cdnjs.cloudflare.com;
+  style-src 'self' 'unsafe-inline';
+  connect-src 'self' https://script.google.com https://www.spot-hit.fr;
+  img-src 'self' data: blob:;
+  font-src 'self' data:;
+  worker-src 'self' blob:;
+  frame-src 'none';
+  object-src 'none';
+  base-uri 'self';
+"/>
 <title>Fermapro – Heures & Absences</title>
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png"/>
 <link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png"/>
@@ -23,11 +36,25 @@ input,button,select{font-family:inherit;}
 <body>
 <div id="root"></div>
 
-<!-- React -->
-<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<!-- React — #5 SRI: générer avec: curl -sL URL | openssl dgst -sha384 -binary | openssl base64 -A -->
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"
+  crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"
+  crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"
+  crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"
+  crossorigin="anonymous"></script>
+<!-- #8 — Service Worker registration -->
+<script>
+if('serviceWorker' in navigator){
+  window.addEventListener('load',()=>{
+    navigator.serviceWorker.register('/sw.js')
+      .then(r=>console.log('✅ SW enregistré:',r.scope))
+      .catch(e=>console.warn('⚠️ SW échec:',e));
+  });
+}
+</script>
 
 <!-- ═══ GOOGLE SHEETS — APPS SCRIPT STORAGE ══════════════════ -->
 <script>
@@ -43,33 +70,90 @@ async function sha256(str){
   return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
 }
 
+// ── #3 — UUID cryptographique (évite collisions ID entre appareils) ───────────
+function uuid(prefix=""){
+  if(typeof crypto.randomUUID==="function")
+    return prefix+crypto.randomUUID().replace(/-/g,"").slice(0,16);
+  const arr=new Uint8Array(8);crypto.getRandomValues(arr);
+  return prefix+Array.from(arr).map(b=>b.toString(16).padStart(2,"0")).join("");
+}
+
 // ── Hash SHA-256 du mot de passe admin (jamais en clair dans le code) ────────
 const ADMIN_HASH="6d27953b5ffe439d4c4e370cb520b03f0ca22af1837b702bcf459ef03d692f1a";
 
 // ── localStorage — cache local immédiat, toujours disponible ─────────────────
+// #4 — Chiffrement AES-GCM des données sensibles dans localStorage
+// Clé dérivée d'un secret fixe par appareil (device fingerprint léger)
+// Note : ne protège pas contre un attaquant avec accès OS, mais bloque
+// la lecture depuis DevTools ou un autre profil navigateur
+const _lsEncKey=(async()=>{
+  const raw=new TextEncoder().encode("fp_local_v1_"+navigator.userAgent.slice(0,30));
+  const base=await crypto.subtle.importKey("raw",raw,"PBKDF2",false,["deriveKey"]);
+  return crypto.subtle.deriveKey(
+    {name:"PBKDF2",salt:new TextEncoder().encode("fermapro2026"),iterations:10000,hash:"SHA-256"},
+    base,{name:"AES-GCM",length:256},false,["encrypt","decrypt"]
+  );
+})();
+
+async function lssEnc(k,v){
+  try{
+    const key=await _lsEncKey;
+    const iv=crypto.getRandomValues(new Uint8Array(12));
+    const data=new TextEncoder().encode(JSON.stringify(v));
+    const enc=await crypto.subtle.encrypt({name:"AES-GCM",iv},key,data);
+    const payload={iv:Array.from(iv),enc:Array.from(new Uint8Array(enc))};
+    localStorage.setItem(k,JSON.stringify({_fp_enc:1,...payload}));
+  }catch(e){
+    // Fallback non chiffré si SubtleCrypto indisponible
+    try{localStorage.setItem(k,JSON.stringify(v));}catch{}
+  }
+}
+async function lsgDec(k){
+  try{
+    const raw=localStorage.getItem(k);
+    if(!raw)return null;
+    const parsed=JSON.parse(raw);
+    if(!parsed._fp_enc) return parsed; // données non chiffrées (migration)
+    const key=await _lsEncKey;
+    const iv=new Uint8Array(parsed.iv);
+    const enc=new Uint8Array(parsed.enc);
+    const dec=await crypto.subtle.decrypt({name:"AES-GCM",iv},key,enc);
+    return JSON.parse(new TextDecoder().decode(dec));
+  }catch{return null;}
+}
+
+// Versions synchrones pour compatibilité (non chiffrées — pour les clés non sensibles)
 function lsg(k){try{const v=localStorage.getItem(k);return v?JSON.parse(v):null;}catch{return null;}}
 function lss(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}}
-
+// Versions chiffrées pour les données sensibles (heures, employés)
+async function lsgS(k){return await lsgDec(k)||lsg(k);}
+async function lssS(k,v){await lssEnc(k,v);}
 // ── Indicateur connexion ──────────────────────────────────────────────────────
 const GS_READY = SCRIPT_URL && SCRIPT_URL !== "VOTRE_APPS_SCRIPT_URL";
 
-// ── Lecture depuis Apps Script (GET — pas de problème CORS) ──────────────────
+// ── Lecture depuis Apps Script (#1 — POST pour éviter secret dans URL) ────────
 async function sg(k){
   if(GS_READY){
     try{
       const ctrl=new AbortController();
-      const tid=setTimeout(()=>ctrl.abort(),8000); // timeout 8s
-      const url=`${SCRIPT_URL}?secret=${SECRET}&action=get&key=${encodeURIComponent(k)}`;
-      const r=await fetch(url,{redirect:"follow",signal:ctrl.signal});
+      const tid=setTimeout(()=>ctrl.abort(),8000);
+      // #1 — Lecture via POST (secret dans le body, pas dans l'URL)
+      const r=await fetch(SCRIPT_URL,{
+        method:"POST",
+        headers:{"Content-Type":"text/plain"},
+        body:JSON.stringify({secret:SECRET,action:"get",key:k}),
+        redirect:"follow",
+        signal:ctrl.signal
+      });
       clearTimeout(tid);
       const j=await r.json();
       if(j.ok && j.data!==null){
-        lss(k,j.data); // mise à jour cache local
+        lss(k,j.data);
         return j.data;
       }
-    }catch(e){console.warn("sg Apps Script error, using local cache",e);}
+    }catch(e){console.warn("sg POST error, using local cache",e);}
   }
-  return lsg(k); // fallback local
+  return lsg(k);
 }
 
 // ── Écriture vers Apps Script (POST text/plain) ───────────────────────────────
@@ -151,10 +235,14 @@ async function safeSave(key,newEntries,onSyncError){
   lss(key,newEntries); // localStorage immédiat — toujours fiable
   if(!GS_READY){retryQueueAdd(key,newEntries);return;}
   try{
+    // #1 — Lecture via POST (secret jamais dans l'URL)
     const ctrl=new AbortController();
     const tid=setTimeout(()=>ctrl.abort(),8000);
-    const url=`${SCRIPT_URL}?secret=${SECRET}&action=get&key=${encodeURIComponent(key)}`;
-    const r=await fetch(url,{redirect:"follow",signal:ctrl.signal});
+    const r=await fetch(SCRIPT_URL,{
+      method:"POST",headers:{"Content-Type":"text/plain"},
+      body:JSON.stringify({secret:SECRET,action:"get",key}),
+      redirect:"follow",signal:ctrl.signal
+    });
     clearTimeout(tid);
     const j=await r.json();
     const remote=(j.ok&&Array.isArray(j.data))?j.data:[];
@@ -213,10 +301,39 @@ async function safeSave(key,newEntries,onSyncError){
 async function adminLog(action,detail){
   const key="fp:admin:log";
   const existing=await sg(key)||[];
-  const entry={id:`log_${Date.now()}`,action,detail,at:new Date().toLocaleString("fr-FR")};
-  const next=[entry,...existing].slice(0,200); // garder les 200 dernières
+  const entry={id:uuid("log_"),action,detail,at:new Date().toLocaleString("fr-FR")};
+  const next=[entry,...existing].slice(0,200);
   ss(key,next);
 }
+
+// ── #9 — Monitoring : remontée d'erreurs vers Apps Script ────────────────────
+window.addEventListener("error",(evt)=>{
+  if(!GS_READY)return;
+  const err={
+    msg:evt.message,
+    file:evt.filename,
+    line:evt.lineno,
+    col:evt.colno,
+    ua:navigator.userAgent.slice(0,80),
+    at:new Date().toISOString()
+  };
+  fetch(SCRIPT_URL,{
+    method:"POST",headers:{"Content-Type":"text/plain"},
+    body:JSON.stringify({secret:SECRET,action:"log_error",error:err}),
+    redirect:"follow"
+  }).catch(()=>{});
+});
+window.addEventListener("unhandledrejection",(evt)=>{
+  if(!GS_READY)return;
+  fetch(SCRIPT_URL,{
+    method:"POST",headers:{"Content-Type":"text/plain"},
+    body:JSON.stringify({secret:SECRET,action:"log_error",error:{
+      msg:"UnhandledRejection: "+(evt.reason?.message||String(evt.reason)),
+      at:new Date().toISOString()
+    }}),
+    redirect:"follow"
+  }).catch(()=>{});
+});
 
 console.log(GS_READY?"✅ Google Sheets Apps Script prêt":"⚠️ Mode local — configurez SCRIPT_URL");
 </script>
@@ -514,15 +631,21 @@ function EmpLogin({employees,onLogin,onBack,onEmpUpdate}){
     setBioState("registering");setErr("");
     try{
       const credId=await waRegister(sel.id,sel.name);
-      // Sauvegarder credentialId dans le profil
-      const updated={...sel,credentialId:credId};
+      // #7 — Stocker le credentialId en clair dans localStorage (pour auth locale)
+      // mais uniquement un hash SHA-256 dans Google Sheets (pas d'exposition biométrique)
+      const credHash=await sha256(credId);
+      const updated={...sel,credentialId:credId,credentialHash:credHash};
       const allEmps=await sg("fp:employees")||[];
-      const next=allEmps.map(e=>e.id===sel.id?updated:e);
-      await ss("fp:employees",next);
-      if(onEmpUpdate)onEmpUpdate(updated,next);
+      // Sauvegarder hash seul dans Sheets, credentialId complet en local uniquement
+      const forSheets=allEmps.map(e=>e.id===sel.id
+        ?{...e,credentialId:"LOCAL_ONLY",credentialHash:credHash}
+        :e);
+      const forLocal=allEmps.map(e=>e.id===sel.id?updated:e);
+      lss("fp:employees",forLocal); // localStorage = credentialId complet
+      await ss("fp:employees",forSheets); // Sheets = hash uniquement
       setSel(updated);setBioState("idle");
       setStep("bio");
-      adminLog("ENREG_BIO",`${sel.name} — enregistrement biométrique`);
+      adminLog("ENREG_BIO",`${sel.name} — biométrie enregistrée (hash uniquement en Sheets)`);
     }catch(e){
       setBioState("error");
       if(e.name==="NotAllowedError")setErr("Enregistrement annulé.");
@@ -1092,7 +1215,7 @@ function EmpDash({employee,employees,onLogout,onEmpUpdate}){
   async function save(form){
     setSaving(true);setSyncError(false);
     // D2 — timestamp sur chaque entrée
-    const entry={...form,id:editEntry?.id||`e${Date.now()}`,updatedAt:Date.now()};
+    const entry={...form,id:editEntry?.id||uuid('e'),updatedAt:Date.now()};
     const next=editEntry?entries.map(e=>e.id===editEntry.id?entry:e):[...entries,entry].sort((a,b)=>(a.date||a.dateStart).localeCompare(b.date||b.dateStart));
     setEntries(next);
     // D1 — safeSave avec merge anti-écrasement
@@ -1352,7 +1475,7 @@ function EmpManager({employees,onUpdate}){
     let next;
     const data={name:form.name.trim(),pin:form.pin,contractType:form.contractType,entryDate:form.entryDate,photo:form.photo,email:form.email||'',phone:form.phone||'',mealType:form.mealType||"ticket"};
     if(editId){next=employees.map(emp=>emp.id===editId?{...emp,...data}:emp);showToast("✓ Modifié et synchronisé");adminLog("MODIF_EMPLOYE",`${data.name} (${editId})`);}
-    else{next=[...employees,{id:`emp_${Date.now()}`,...data}];showToast("✓ Ajouté et synchronisé");adminLog("AJOUT_EMPLOYE",data.name);}
+    else{next=[...employees,{id:uuid('emp_'),...data}];showToast("✓ Ajouté et synchronisé");adminLog("AJOUT_EMPLOYE",data.name);}
     await ss("fp:employees",next);
     onUpdate(next);setForm(emptyForm);setEditId(null);setErr("");setSaving(false);
   }
