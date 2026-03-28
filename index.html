@@ -106,12 +106,12 @@ const CONTRATS=[
 function ct(id){return CONTRATS.find(c=>c.id===id)||{label:id||"",color:"#718096",bg:"#F7FAFC"};}
 // IDs PERMANENTS — ne jamais modifier ces IDs
 const INIT_EMP=[
-  {id:"emp_1774035340883",name:"Valentin Chanonat", pin:"1111",contractType:"cdi", entryDate:"2020-10-01",photo:"",email:"",phone:""},
-  {id:"emp_1774035394447",name:"Alexia Da Silva",   pin:"2222",contractType:"cdi", entryDate:"",photo:"",email:"",phone:""},
-  {id:"emp_1774035408617",name:"Julien Pierre",     pin:"3333",contractType:"cdi", entryDate:"",photo:"",email:"",phone:""},
-  {id:"emp_1774035420115",name:"Charles Malesa",    pin:"4444",contractType:"cdi", entryDate:"",photo:"",email:"",phone:""},
-  {id:"emp_1774035432347",name:"Sacha Bedu",        pin:"5555",contractType:"cdi", entryDate:"",photo:"",email:"",phone:""},
-  {id:"emp_1774035448182",name:"Anthony Gatien",    pin:"6666",contractType:"cdi", entryDate:"",photo:"",email:"",phone:""},
+  {id:"emp_1774035340883",name:"Valentin Chanonat", pin:"1111",contractType:"cdi", entryDate:"2020-10-01",photo:"",email:"",phone:"",mealType:"ticket"},
+  {id:"emp_1774035394447",name:"Alexia Da Silva",   pin:"2222",contractType:"cdi", entryDate:"",photo:"",email:"",phone:"",mealType:"ticket"},
+  {id:"emp_1774035408617",name:"Julien Pierre",     pin:"3333",contractType:"cdi", entryDate:"",photo:"",email:"",phone:"",mealType:"ticket"},
+  {id:"emp_1774035420115",name:"Charles Malesa",    pin:"4444",contractType:"cdi", entryDate:"",photo:"",email:"",phone:"",mealType:"ticket"},
+  {id:"emp_1774035432347",name:"Sacha Bedu",        pin:"5555",contractType:"cdi", entryDate:"",photo:"",email:"",phone:"",mealType:"ticket"},
+  {id:"emp_1774035448182",name:"Anthony Gatien",    pin:"6666",contractType:"cdi", entryDate:"",photo:"",email:"",phone:"",mealType:"ticket"},
 ];
 const ABS=[
   {id:"cp",   label:"Congés payés",        color:"#2F855A",bg:"#F0FFF4",icon:"🏖"},
@@ -736,7 +736,7 @@ function AdminLogin({onLogin,onBack}){
 // ── GESTION SALARIÉS ──────────────────────────────────────────────────────────
 function EmpManager({employees,onUpdate}){
   const COLS=["#1E3A7B","#E8457A","#2F855A","#B7791F","#6B46C1","#C53030","#2B6CB0","#276749"];
-  const emptyForm={name:"",pin:"",contractType:"cdi",entryDate:"",photo:"",email:"",phone:""};
+  const emptyForm={name:"",pin:"",contractType:"cdi",entryDate:"",photo:"",email:"",phone:"",mealType:"ticket"};
   const[form,setForm]=useState(emptyForm);
   const[editId,setEditId]=useState(null);
   const[err,setErr]=useState("");
@@ -776,7 +776,7 @@ function EmpManager({employees,onUpdate}){
     const e=validate();if(e){setErr(e);return;}
     setSaving(true);
     let next;
-    const data={name:form.name.trim(),pin:form.pin,contractType:form.contractType,entryDate:form.entryDate,photo:form.photo,email:form.email||'',phone:form.phone||''};
+    const data={name:form.name.trim(),pin:form.pin,contractType:form.contractType,entryDate:form.entryDate,photo:form.photo,email:form.email||'',phone:form.phone||'',mealType:form.mealType||"ticket"};
     if(editId){next=employees.map(emp=>emp.id===editId?{...emp,...data}:emp);showToast("✓ Modifié et synchronisé");}
     else{next=[...employees,{id:`emp_${Date.now()}`,...data}];showToast("✓ Ajouté et synchronisé");}
     await ss("fp:employees",next);
@@ -852,6 +852,18 @@ function EmpManager({employees,onUpdate}){
           <Inp label="Téléphone portable" type="tel" value={form.phone||""} onChange={e=>{setF("phone")(e.target.value);}} placeholder="06 12 34 56 78"/>
         </div>
 
+        <div style={{marginBottom:14}}>
+          <label style={{display:"block",fontSize:11,fontWeight:700,color:"#4A5568",marginBottom:8,letterSpacing:0.5,textTransform:"uppercase"}}>🍽 Avantage repas</label>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+            {[{v:"ticket",icon:"🎟",label:"Ticket restaurant"},{v:"panier",icon:"🧺",label:"Panier repas"}].map(o=>(
+              <button key={o.v} onClick={()=>setF("mealType")(o.v)}
+                style={{padding:"0.75rem",borderRadius:12,border:`2px solid ${form.mealType===o.v?NAVY:"#E2E8F0"}`,background:form.mealType===o.v?`${NAVY}08`:"#F7F9FC",fontWeight:700,fontSize:13,cursor:"pointer",color:form.mealType===o.v?NAVY:"#718096",display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
+                <span>{o.icon}</span>{o.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
         {err&&<div style={{background:"#FFF5F5",border:"1.5px solid #FEB2B2",borderRadius:10,padding:"0.7rem 1rem",color:"#C53030",fontSize:13,marginBottom:14,fontWeight:600}}>⚠️ {err}</div>}
         <div style={{display:"grid",gridTemplateColumns:editId?"1fr 1fr":"1fr",gap:10}}>
           {editId&&<Btn variant="outline" onClick={()=>{setEditId(null);setForm(emptyForm);setErr("");}}>Annuler</Btn>}
@@ -905,11 +917,12 @@ function EmpManager({employees,onUpdate}){
                         {emp.entryDate&&<span style={{fontSize:11,background:"#EDF2F7",color:"#4A5568",borderRadius:5,padding:"1px 8px",fontWeight:600}}>📅 {fmtDate(emp.entryDate)}</span>}
                         {emp.email&&<span style={{fontSize:11,background:"#EBF8FF",color:"#2B6CB0",borderRadius:5,padding:"1px 8px",fontWeight:600}}>✉ {emp.email}</span>}
                         {emp.phone&&<span style={{fontSize:11,background:"#F0FFF4",color:"#276749",borderRadius:5,padding:"1px 8px",fontWeight:600}}>📱 {emp.phone}</span>}
+                        <span style={{fontSize:11,background:emp.mealType==="panier"?"#FFFAF0":"#EBF8FF",color:emp.mealType==="panier"?"#B7791F":"#2B6CB0",borderRadius:5,padding:"1px 8px",fontWeight:700}}>{emp.mealType==="panier"?"🧺 Panier":"🎟 Ticket"}</span>
                         <span style={{fontSize:11,background:"#EDF2F7",color:"#4A5568",borderRadius:5,padding:"1px 8px",fontWeight:700,letterSpacing:2}}>PIN ••••</span>
                       </div>
                     </div>
                     <div style={{display:"flex",gap:6}}>
-                      {!emp.archived&&<button onClick={()=>{setEditId(emp.id);setForm({name:emp.name,pin:emp.pin,contractType:emp.contractType||"cdi",entryDate:emp.entryDate||"",photo:emp.photo||"",email:emp.email||"",phone:emp.phone||""});setErr("");}} style={{background:isE?`${MAG}15`:`${NAVY}10`,border:"none",borderRadius:9,padding:"6px 12px",fontSize:12,color:isE?MAG:NAVY,cursor:"pointer",fontWeight:700}}>✏</button>}
+                      {!emp.archived&&<button onClick={()=>{setEditId(emp.id);setForm({name:emp.name,pin:emp.pin,contractType:emp.contractType||"cdi",entryDate:emp.entryDate||"",photo:emp.photo||"",email:emp.email||"",phone:emp.phone||"",mealType:emp.mealType||"ticket"});setErr("");}} style={{background:isE?`${MAG}15`:`${NAVY}10`,border:"none",borderRadius:9,padding:"6px 12px",fontSize:12,color:isE?MAG:NAVY,cursor:"pointer",fontWeight:700}}>✏</button>}
                       <button onClick={()=>toggleArchive(emp.id)} title={emp.archived?"Réactiver":"Archiver"} style={{background:emp.archived?"#F0FFF4":"#FFFAF0",border:"none",borderRadius:9,padding:"6px 10px",fontSize:13,cursor:"pointer"}}>
                         {emp.archived?"♻️":"📦"}
                       </button>
@@ -1087,10 +1100,19 @@ function AdminDash({employees:initEmp,onLogout,onEmpChange}){
   function eAbs(id){return(allData[id]||[]).filter(e=>e.type==="absence");}
   function eTotH(id){return eWork(id).reduce((s,e)=>s+calcH(e.startTime,e.endTime,e.breakMin),0);}
   function eTotAbs(id){return eAbs(id).reduce((s,e)=>s+Number(e.nbDays||1),0);}
+  // Modification G — nb jours travaillés complets (1 ticket ou panier par journée)
+  function countMealDays(id){
+    const w=eWork(id);
+    const dates=new Set(w.map(e=>e.date).filter(Boolean));
+    return dates.size;
+  }
 
   const grandH=employees.reduce((s,e)=>s+eTotH(e.id),0);
   const grandAbs=employees.reduce((s,e)=>s+eTotAbs(e.id),0);
   const active=employees.filter(e=>(allData[e.id]||[]).length>0).length;
+  // Modification H — totaux tickets/paniers du mois
+  const totalTickets=employees.filter(e=>!e.archived&&(e.mealType||"ticket")==="ticket").reduce((s,e)=>s+countMealDays(e.id),0);
+  const totalPaniers=employees.filter(e=>!e.archived&&e.mealType==="panier").reduce((s,e)=>s+countMealDays(e.id),0);
 
   const BACKUP_KEY = "fp:last_backup_date";
 
@@ -1318,8 +1340,34 @@ function AdminDash({employees:initEmp,onLogout,onEmpChange}){
     const ws2=XLSX.utils.aoa_to_sheet(sheet2);
     ws1["!cols"]=[{wch:22},{wch:36},{wch:20},{wch:14},{wch:28},{wch:22},{wch:14},{wch:14}];
     ws2["!cols"]=[{wch:22},{wch:32},{wch:8},{wch:10},{wch:12},{wch:12},{wch:12},{wch:18},{wch:28},{wch:22},{wch:14}];
+
+    // ── Onglet 3 — Tickets & Paniers ───────────────────────────────
+    const sheet3=[
+      [`TICKETS & PANIERS REPAS — ${fmtYM(ym).toUpperCase()}`,"","","",""],
+      [`Période : ${fmtYM(ym)}   |   1 journée complète travaillée = 1 ticket ou 1 panier`,"","","",""],
+      [""],
+      ["Salarié","Type d'avantage","Jours travaillés","Nb tickets","Nb paniers"],
+    ];
+    let grandTotalTickets=0,grandTotalPaniers=0;
+    employees.forEach(emp=>{
+      const workEntries=(allData[emp.id]||[]).filter(e=>e.type==="work"||!e.type);
+      const uniqueDates=new Set(workEntries.map(e=>e.date).filter(Boolean));
+      const joursT=uniqueDates.size;
+      const type=emp.mealType||"ticket";
+      const nbT=type==="ticket"?joursT:0;
+      const nbP=type==="panier"?joursT:0;
+      grandTotalTickets+=nbT;
+      grandTotalPaniers+=nbP;
+      sheet3.push([emp.name,type==="ticket"?"🎟 Ticket restaurant":"🧺 Panier repas",joursT,nbT||"",nbP||""]);
+    });
+    sheet3.push([""]);
+    sheet3.push(["TOTAUX","",employees.reduce((s,e)=>{const w=(allData[e.id]||[]).filter(x=>x.type==="work"||!x.type);return s+new Set(w.map(x=>x.date).filter(Boolean)).size;},0),grandTotalTickets,grandTotalPaniers]);
+    const ws3=XLSX.utils.aoa_to_sheet(sheet3);
+    ws3["!cols"]=[{wch:26},{wch:22},{wch:18},{wch:14},{wch:14}];
+
     XLSX.utils.book_append_sheet(wb,ws1,"Synthèse hebdo");
     XLSX.utils.book_append_sheet(wb,ws2,"Détail journalier");
+    XLSX.utils.book_append_sheet(wb,ws3,"Tickets & Paniers");
     XLSX.writeFile(wb,`fermapro_${ym}.xlsx`);
   }
 
@@ -1410,6 +1458,16 @@ function AdminDash({employees:initEmp,onLogout,onEmpChange}){
                   <div style={{fontSize:11,color:"#718096",marginTop:4,fontWeight:700,letterSpacing:0.4}}>{l.toUpperCase()}</div>
                 </div>
               ))}
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:"1.5rem"}}>
+              <div style={{background:"#fff",borderRadius:16,padding:"1rem 1.25rem",boxShadow:"0 2px 10px rgba(0,0,0,0.06)",borderTop:"3px solid #2B6CB0",display:"flex",alignItems:"center",gap:12}}>
+                <div style={{fontSize:28}}>🎟</div>
+                <div><div style={{fontSize:22,fontWeight:800,color:"#2B6CB0"}}>{totalTickets}</div><div style={{fontSize:11,color:"#718096",fontWeight:700,letterSpacing:0.4}}>TICKETS RESTAURANT</div></div>
+              </div>
+              <div style={{background:"#fff",borderRadius:16,padding:"1rem 1.25rem",boxShadow:"0 2px 10px rgba(0,0,0,0.06)",borderTop:"3px solid #B7791F",display:"flex",alignItems:"center",gap:12}}>
+                <div style={{fontSize:28}}>🧺</div>
+                <div><div style={{fontSize:22,fontWeight:800,color:"#B7791F"}}>{totalPaniers}</div><div style={{fontSize:11,color:"#718096",fontWeight:700,letterSpacing:0.4}}>PANIERS REPAS</div></div>
+              </div>
             </div>
 
             {loading?<Spinner/>:!detailId?(
