@@ -951,14 +951,14 @@ function EmpDash({employee,employees,onLogout,onEmpUpdate}){
         else{sheet2.push([fmtDate(ds),jour,"Travail",e.startTime,e.endTime,e.breakMin||"0",fmtHL(calcH(e.startTime,e.endTime,e.breakMin)),e.note||"","",""]);}
       });
 
-      // F4 — Onglet Tickets & Paniers par mois (seuil 5h, sans absences)
+      // F4 — Onglet Tickets & Paniers par mois (seuil >6h, sans absences)
       const mealT=employee.mealType||"ticket";
       const mealLabel=mealT==="panier"?"🧺 Panier repas":"🎟 Ticket restaurant";
       const sheet3=[
         [`TICKETS & PANIERS — ${employee.name.toUpperCase()}`,"","",""],
-        [`Type d'avantage : ${mealLabel}   |   Règle : journée ≥ 5h effectives sans absence`,"","",""],
+        [`Type d'avantage : ${mealLabel}   |   Règle : journée > 6h effectives sans absence`,"","",""],
         [""],
-        ["Mois","Jours éligibles (≥5h)","Nb "+( mealT==="ticket"?"tickets":"paniers"),"Cumul"],
+        ["Mois","Jours éligibles (>6h)","Nb "+( mealT==="ticket"?"tickets":"paniers"),"Cumul"],
       ];
       let cumul=0;
       results.sort((a,b)=>a.m.localeCompare(b.m)).forEach(({m,data})=>{
@@ -977,7 +977,7 @@ function EmpDash({employee,employees,onLogout,onEmpUpdate}){
           if(!hoursByDate[e.date])hoursByDate[e.date]=0;
           hoursByDate[e.date]+=calcH(e.startTime,e.endTime,e.breakMin);
         });
-        const jours=Object.entries(hoursByDate).filter(([date,h])=>h>=5&&!absDates.has(date)).length;
+        const jours=Object.entries(hoursByDate).filter(([date,h])=>h>6&&!absDates.has(date)).length;
         if(jours===0)return;
         cumul+=jours;
         sheet3.push([fmtYM(m),jours,jours,cumul]);
@@ -1627,7 +1627,7 @@ function AdminDash({employees:initEmp,onLogout,onEmpChange}){
   function eAbs(id){return(allData[id]||[]).filter(e=>e.type==="absence");}
   function eTotH(id){return eWork(id).reduce((s,e)=>s+calcH(e.startTime,e.endTime,e.breakMin),0);}
   function eTotAbs(id){return eAbs(id).reduce((s,e)=>s+Number(e.nbDays||1),0);}
-  // Calcul corrigé — seuil 5h effectives + exclusion jours d'absence
+  // Calcul corrigé — seuil >6h effectives + exclusion jours d'absence
   function countMealDays(id){
     const entries=allData[id]||[];
     const workEntries=entries.filter(e=>e.type==="work"||!e.type);
@@ -1646,8 +1646,8 @@ function AdminDash({employees:initEmp,onLogout,onEmpChange}){
       if(!hoursByDate[e.date])hoursByDate[e.date]=0;
       hoursByDate[e.date]+=calcH(e.startTime,e.endTime,e.breakMin);
     });
-    // Compter les dates ≥ 5h sans absence
-    return Object.entries(hoursByDate).filter(([date,h])=>h>=5&&!absDates.has(date)).length;
+    // Compter les dates > 6h sans absence
+    return Object.entries(hoursByDate).filter(([date,h])=>h>6&&!absDates.has(date)).length;
   }
 
   const grandH=employees.reduce((s,e)=>s+eTotH(e.id),0);
@@ -1884,7 +1884,7 @@ function AdminDash({employees:initEmp,onLogout,onEmpChange}){
     ws1["!cols"]=[{wch:22},{wch:36},{wch:20},{wch:14},{wch:28},{wch:22},{wch:14},{wch:14}];
     ws2["!cols"]=[{wch:22},{wch:32},{wch:8},{wch:10},{wch:12},{wch:12},{wch:12},{wch:18},{wch:28},{wch:22},{wch:14}];
 
-    // ── Onglet 3 — Tickets & Paniers (seuil 5h, sans absences) ─────
+    // ── Onglet 3 — Tickets & Paniers (seuil >6h, sans absences) ─────
     // Fonction locale de calcul corrigé
     function calcMealDaysForExport(empId){
       const entries=allData[empId]||[];
@@ -1900,13 +1900,13 @@ function AdminDash({employees:initEmp,onLogout,onEmpChange}){
         if(!hoursByDate[e.date])hoursByDate[e.date]=0;
         hoursByDate[e.date]+=calcH(e.startTime,e.endTime,e.breakMin);
       });
-      return Object.entries(hoursByDate).filter(([date,h])=>h>=5&&!absDates.has(date)).length;
+      return Object.entries(hoursByDate).filter(([date,h])=>h>6&&!absDates.has(date)).length;
     }
     const sheet3=[
       [`TICKETS & PANIERS REPAS — ${fmtYM(ym).toUpperCase()}`,"","","",""],
-      [`Période : ${fmtYM(ym)}   |   Règle : journée ≥ 5h effectives sans absence = 1 ticket ou 1 panier`,"","","",""],
+      [`Période : ${fmtYM(ym)}   |   Règle : journée > 6h effectives sans absence = 1 ticket ou 1 panier`,"","","",""],
       [""],
-      ["Salarié","Type d'avantage","Jours éligibles (≥5h)","Nb tickets","Nb paniers"],
+      ["Salarié","Type d'avantage","Jours éligibles (>6h)","Nb tickets","Nb paniers"],
     ];
     let grandTotalTickets=0,grandTotalPaniers=0;
     employees.forEach(emp=>{
