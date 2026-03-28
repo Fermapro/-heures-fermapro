@@ -1696,16 +1696,25 @@ function MessagesPanel({employees}){
         const emp=actifs.find(e=>e.id===id);
         return{name:emp.name,value:channel==="sms"?emp.phone:emp.email};
       });
+      const ctrl=new AbortController();
+      const tid=setTimeout(()=>ctrl.abort(),20000); // timeout 20s
       const r=await fetch(SCRIPT_URL,{
         method:"POST",
         headers:{"Content-Type":"text/plain"},
         body:JSON.stringify({secret:SECRET,action:"send_message",channel,recipients,message:message.trim(),subject:subject.trim()}),
-        redirect:"follow"
+        redirect:"follow",
+        signal:ctrl.signal
       });
+      clearTimeout(tid);
       const j=await r.json();
       setResult(j);
       if(j.ok){setMessage("");setSubject("");setSelected([]);}
-    }catch(e){setResult({ok:false,error:e.message});}
+    }catch(e){
+      if(e.name==="AbortError")setResult({ok:false,error:"Délai dépassé — vérifiez votre connexion et réessayez."});
+      else if(e.message==="Load failed"||e.message==="Failed to fetch")
+        setResult({ok:false,error:"Connexion impossible à Apps Script. Vérifiez que le déploiement est bien publié (Déployer → Gérer les déploiements → Nouvelle version)."});
+      else setResult({ok:false,error:e.message});
+    }
     setSending(false);
   }
 
