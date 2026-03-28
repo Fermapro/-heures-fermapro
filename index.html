@@ -951,20 +951,33 @@ function EmpDash({employee,employees,onLogout,onEmpUpdate}){
         else{sheet2.push([fmtDate(ds),jour,"Travail",e.startTime,e.endTime,e.breakMin||"0",fmtHL(calcH(e.startTime,e.endTime,e.breakMin)),e.note||"","",""]);}
       });
 
-      // F4 — Onglet Tickets & Paniers par mois
+      // F4 — Onglet Tickets & Paniers par mois (seuil 5h, sans absences)
       const mealT=employee.mealType||"ticket";
       const mealLabel=mealT==="panier"?"🧺 Panier repas":"🎟 Ticket restaurant";
       const sheet3=[
         [`TICKETS & PANIERS — ${employee.name.toUpperCase()}`,"","",""],
-        [`Type d'avantage : ${mealLabel}`,"","",""],
+        [`Type d'avantage : ${mealLabel}   |   Règle : journée ≥ 5h effectives sans absence`,"","",""],
         [""],
-        ["Mois","Jours travaillés",mealT==="ticket"?"Tickets":"Paniers","Cumul"],
+        ["Mois","Jours éligibles (≥5h)","Nb "+( mealT==="ticket"?"tickets":"paniers"),"Cumul"],
       ];
       let cumul=0;
       results.sort((a,b)=>a.m.localeCompare(b.m)).forEach(({m,data})=>{
         if(!data.length)return;
-        const workD=data.filter(e=>e.type==="work"||!e.type);
-        const jours=new Set(workD.map(e=>e.date).filter(Boolean)).size;
+        // Dates d'absence du mois
+        const absEntries=data.filter(e=>e.type==="absence");
+        const absDates=new Set();
+        absEntries.forEach(e=>{
+          let cur=new Date(e.dateStart);const end=new Date(e.dateEnd||e.dateStart);
+          while(cur<=end){absDates.add(cur.toISOString().slice(0,10));cur.setDate(cur.getDate()+1);}
+        });
+        // Heures par date
+        const hoursByDate={};
+        data.filter(e=>e.type==="work"||!e.type).forEach(e=>{
+          if(!e.date)return;
+          if(!hoursByDate[e.date])hoursByDate[e.date]=0;
+          hoursByDate[e.date]+=calcH(e.startTime,e.endTime,e.breakMin);
+        });
+        const jours=Object.entries(hoursByDate).filter(([date,h])=>h>=5&&!absDates.has(date)).length;
         if(jours===0)return;
         cumul+=jours;
         sheet3.push([fmtYM(m),jours,jours,cumul]);
@@ -1614,11 +1627,27 @@ function AdminDash({employees:initEmp,onLogout,onEmpChange}){
   function eAbs(id){return(allData[id]||[]).filter(e=>e.type==="absence");}
   function eTotH(id){return eWork(id).reduce((s,e)=>s+calcH(e.startTime,e.endTime,e.breakMin),0);}
   function eTotAbs(id){return eAbs(id).reduce((s,e)=>s+Number(e.nbDays||1),0);}
-  // Modification G — nb jours travaillés complets (1 ticket ou panier par journée)
+  // Calcul corrigé — seuil 5h effectives + exclusion jours d'absence
   function countMealDays(id){
-    const w=eWork(id);
-    const dates=new Set(w.map(e=>e.date).filter(Boolean));
-    return dates.size;
+    const entries=allData[id]||[];
+    const workEntries=entries.filter(e=>e.type==="work"||!e.type);
+    const absEntries=entries.filter(e=>e.type==="absence");
+    // Construire le Set des dates d'absence
+    const absDates=new Set();
+    absEntries.forEach(e=>{
+      let cur=new Date(e.dateStart);
+      const end=new Date(e.dateEnd||e.dateStart);
+      while(cur<=end){absDates.add(cur.toISOString().slice(0,10));cur.setDate(cur.getDate()+1);}
+    });
+    // Agréger les heures par date
+    const hoursByDate={};
+    workEntries.forEach(e=>{
+      if(!e.date)return;
+      if(!hoursByDate[e.date])hoursByDate[e.date]=0;
+      hoursByDate[e.date]+=calcH(e.startTime,e.endTime,e.breakMin);
+    });
+    // Compter les dates ≥ 5h sans absence
+    return Object.entries(hoursByDate).filter(([date,h])=>h>=5&&!absDates.has(date)).length;
   }
 
   const grandH=employees.reduce((s,e)=>s+eTotH(e.id),0);
@@ -1855,27 +1884,41 @@ function AdminDash({employees:initEmp,onLogout,onEmpChange}){
     ws1["!cols"]=[{wch:22},{wch:36},{wch:20},{wch:14},{wch:28},{wch:22},{wch:14},{wch:14}];
     ws2["!cols"]=[{wch:22},{wch:32},{wch:8},{wch:10},{wch:12},{wch:12},{wch:12},{wch:18},{wch:28},{wch:22},{wch:14}];
 
-    // ── Onglet 3 — Tickets & Paniers ───────────────────────────────
+    // ── Onglet 3 — Tickets & Paniers (seuil 5h, sans absences) ─────
+    // Fonction locale de calcul corrigé
+    function calcMealDaysForExport(empId){
+      const entries=allData[empId]||[];
+      const absEntries=entries.filter(e=>e.type==="absence");
+      const absDates=new Set();
+      absEntries.forEach(e=>{
+        let cur=new Date(e.dateStart);const end=new Date(e.dateEnd||e.dateStart);
+        while(cur<=end){absDates.add(cur.toISOString().slice(0,10));cur.setDate(cur.getDate()+1);}
+      });
+      const hoursByDate={};
+      entries.filter(e=>e.type==="work"||!e.type).forEach(e=>{
+        if(!e.date)return;
+        if(!hoursByDate[e.date])hoursByDate[e.date]=0;
+        hoursByDate[e.date]+=calcH(e.startTime,e.endTime,e.breakMin);
+      });
+      return Object.entries(hoursByDate).filter(([date,h])=>h>=5&&!absDates.has(date)).length;
+    }
     const sheet3=[
       [`TICKETS & PANIERS REPAS — ${fmtYM(ym).toUpperCase()}`,"","","",""],
-      [`Période : ${fmtYM(ym)}   |   1 journée complète travaillée = 1 ticket ou 1 panier`,"","","",""],
+      [`Période : ${fmtYM(ym)}   |   Règle : journée ≥ 5h effectives sans absence = 1 ticket ou 1 panier`,"","","",""],
       [""],
-      ["Salarié","Type d'avantage","Jours travaillés","Nb tickets","Nb paniers"],
+      ["Salarié","Type d'avantage","Jours éligibles (≥5h)","Nb tickets","Nb paniers"],
     ];
     let grandTotalTickets=0,grandTotalPaniers=0;
     employees.forEach(emp=>{
-      const workEntries=(allData[emp.id]||[]).filter(e=>e.type==="work"||!e.type);
-      const uniqueDates=new Set(workEntries.map(e=>e.date).filter(Boolean));
-      const joursT=uniqueDates.size;
+      const joursT=calcMealDaysForExport(emp.id);
       const type=emp.mealType||"ticket";
       const nbT=type==="ticket"?joursT:0;
       const nbP=type==="panier"?joursT:0;
-      grandTotalTickets+=nbT;
-      grandTotalPaniers+=nbP;
+      grandTotalTickets+=nbT;grandTotalPaniers+=nbP;
       sheet3.push([emp.name,type==="ticket"?"🎟 Ticket restaurant":"🧺 Panier repas",joursT,nbT||"",nbP||""]);
     });
     sheet3.push([""]);
-    sheet3.push(["TOTAUX","",employees.reduce((s,e)=>{const w=(allData[e.id]||[]).filter(x=>x.type==="work"||!x.type);return s+new Set(w.map(x=>x.date).filter(Boolean)).size;},0),grandTotalTickets,grandTotalPaniers]);
+    sheet3.push(["TOTAUX","",grandTotalTickets+grandTotalPaniers,grandTotalTickets,grandTotalPaniers]);
     const ws3=XLSX.utils.aoa_to_sheet(sheet3);
     ws3["!cols"]=[{wch:26},{wch:22},{wch:18},{wch:14},{wch:14}];
 
