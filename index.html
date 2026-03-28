@@ -360,13 +360,14 @@ const CONTRATS=[
 ];
 function ct(id){return CONTRATS.find(c=>c.id===id)||{label:id||"",color:"#718096",bg:"#F7FAFC"};}
 // IDs PERMANENTS — ne jamais modifier ces IDs
+// #1 — PINs stockés en SHA-256 (jamais en clair dans le code ni dans Sheets)
 const INIT_EMP=[
-  {id:"emp_1774035340883",name:"Valentin Chanonat", pin:"1111",contractType:"cdi", entryDate:"2020-10-01",photo:"",email:"",phone:"",mealType:"ticket"},
-  {id:"emp_1774035394447",name:"Alexia Da Silva",   pin:"2222",contractType:"cdi", entryDate:"",photo:"",email:"",phone:"",mealType:"ticket"},
-  {id:"emp_1774035408617",name:"Julien Pierre",     pin:"3333",contractType:"cdi", entryDate:"",photo:"",email:"",phone:"",mealType:"ticket"},
-  {id:"emp_1774035420115",name:"Charles Malesa",    pin:"4444",contractType:"cdi", entryDate:"",photo:"",email:"",phone:"",mealType:"ticket"},
-  {id:"emp_1774035432347",name:"Sacha Bedu",        pin:"5555",contractType:"cdi", entryDate:"",photo:"",email:"",phone:"",mealType:"ticket"},
-  {id:"emp_1774035448182",name:"Anthony Gatien",    pin:"6666",contractType:"cdi", entryDate:"",photo:"",email:"",phone:"",mealType:"ticket"},
+  {id:"emp_1774035340883",name:"Valentin Chanonat", pin:"0ffe1abd1a08215353c233d6e009613e95eec4253832a761af28ff37ac5a150c",contractType:"cdi", entryDate:"2020-10-01",photo:"",email:"",phone:"",mealType:"ticket"},
+  {id:"emp_1774035394447",name:"Alexia Da Silva",   pin:"edee29f882543b956620b26d0ee0e7e950399b1c4222f5de05e06425b4c995e9",contractType:"cdi", entryDate:"",photo:"",email:"",phone:"",mealType:"ticket"},
+  {id:"emp_1774035408617",name:"Julien Pierre",     pin:"318aee3fed8c9d040d35a7fc1fa776fb31303833aa2de885354ddf3d44d8fb69",contractType:"cdi", entryDate:"",photo:"",email:"",phone:"",mealType:"ticket"},
+  {id:"emp_1774035420115",name:"Charles Malesa",    pin:"79f06f8fde333461739f220090a23cb2a79f6d714bee100d0e4b4af249294619",contractType:"cdi", entryDate:"",photo:"",email:"",phone:"",mealType:"ticket"},
+  {id:"emp_1774035432347",name:"Sacha Bedu",        pin:"c1f330d0aff31c1c87403f1e4347bcc21aff7c179908723535f2b31723702525",contractType:"cdi", entryDate:"",photo:"",email:"",phone:"",mealType:"ticket"},
+  {id:"emp_1774035448182",name:"Anthony Gatien",    pin:"d7697570462f7562b83e81258de0f1e41832e98072e44c36ec8efec46786e24e",contractType:"cdi", entryDate:"",photo:"",email:"",phone:"",mealType:"ticket"},
 ];
 const ABS=[
   {id:"cp",   label:"Congés payés",        color:"#2F855A",bg:"#F0FFF4",icon:"🏖"},
@@ -615,7 +616,12 @@ function EmpLogin({employees,onLogin,onBack,onEmpUpdate}){
     setBioState("scanning");setErr("");
     try{
       const ok=await waAuthenticate(sel.credentialId);
-      if(ok){setBioState("idle");onLogin(sel);}
+      if(ok){
+        setBioState("idle");
+        // #4 — Log de connexion
+        adminLog("CONNEXION",`${sel.name} — biométrie (${device.label})`);
+        onLogin(sel);
+      }
       else{setBioState("error");setErr("Authentification refusée.");}
     }catch(e){
       setBioState("error");
@@ -654,9 +660,19 @@ function EmpLogin({employees,onLogin,onBack,onEmpUpdate}){
   }
 
   // ── Fallback PIN ─────────────────────────────────────────────────────────
-  function doLogin(){
+  async function doLogin(){
     if(locked)return;
-    if(pin===sel.pin){setAttempts(0);onLogin(sel);}
+    // #1 — Comparaison SHA-256. Rétrocompat : si PIN encore en clair (4 chiffres), compare direct
+    const storedPin=sel.pin||"";
+    const match=storedPin.length===4
+      ?(pin===storedPin)                  // ancien format non hashé
+      :((await sha256(pin))===storedPin); // nouveau format hashé
+    if(match){
+      setAttempts(0);
+      // #4 — Log de connexion
+      adminLog("CONNEXION",`${sel.name} — code PIN`);
+      onLogin(sel);
+    }
     else{
       const next=attempts+1;setAttempts(next);setPin("");
       if(next>=5){
@@ -1008,7 +1024,9 @@ function ProfileEdit({employee,onSave,onClose,onExport,ym}){
   async function handleSave(){
     if(!/^\d{4}$/.test(pin)){setErr("Le PIN doit faire exactement 4 chiffres.");return;}
     setSaving(true);setErr("");
-    await onSave({pin,photo});
+    // #1 — Hasher le PIN avant sauvegarde
+    const pinHash=await sha256(pin);
+    await onSave({pin:pinHash,photo});
     setSaving(false);setSaved(true);
     setTimeout(()=>setSaved(false),2500);
   }
@@ -1465,15 +1483,24 @@ function EmpManager({employees,onUpdate}){
   function validate(){
     if(!form.name.trim())return"Nom obligatoire.";
     if(!/^\d{4}$/.test(form.pin))return"PIN doit faire 4 chiffres.";
-    const dup=employees.find(e=>e.pin===form.pin&&e.id!==editId);
-    if(dup)return`PIN déjà utilisé par ${dup.name}.`;
+    // Comparaison de doublons : le PIN saisi est en clair, les stockés sont hashés
+    // On ne peut pas comparer directement → on vérifie côté sauvegarde (async)
     return"";
   }
   async function saveEmp(){
     const e=validate();if(e){setErr(e);return;}
+    // #1 — Hasher le PIN avant stockage
+    const pinHash=await sha256(form.pin);
+    // Vérifier doublon sur hash
+    const dup=employees.find(em=>{
+      const stored=em.pin||"";
+      // Comparer hash stocké avec hash du nouveau PIN (ignore l'employé en cours d'édition)
+      return em.id!==editId&&(stored===pinHash||(stored.length===4&&stored===form.pin));
+    });
+    if(dup){setErr(`PIN déjà utilisé par ${dup.name}.`);return;}
     setSaving(true);
     let next;
-    const data={name:form.name.trim(),pin:form.pin,contractType:form.contractType,entryDate:form.entryDate,photo:form.photo,email:form.email||'',phone:form.phone||'',mealType:form.mealType||"ticket"};
+    const data={name:form.name.trim(),pin:pinHash,contractType:form.contractType,entryDate:form.entryDate,photo:form.photo,email:form.email||'',phone:form.phone||'',mealType:form.mealType||"ticket"};
     if(editId){next=employees.map(emp=>emp.id===editId?{...emp,...data}:emp);showToast("✓ Modifié et synchronisé");adminLog("MODIF_EMPLOYE",`${data.name} (${editId})`);}
     else{next=[...employees,{id:uuid('emp_'),...data}];showToast("✓ Ajouté et synchronisé");adminLog("AJOUT_EMPLOYE",data.name);}
     await ss("fp:employees",next);
