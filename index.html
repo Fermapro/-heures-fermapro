@@ -166,18 +166,35 @@ async function sg(k){
   return lsg(k);
 }
 
-// ── Écriture vers Apps Script (POST text/plain) ───────────────────────────────
+// ── Écriture vers Apps Script — version fiable avec confirmation ──────────────
 async function ss(k,v){
-  lss(k,v); // localStorage IMMÉDIAT — toujours fiable
-  if(!GS_READY)return;
+  lss(k,v); // localStorage IMMÉDIAT
+  if(!GS_READY)return false;
   try{
-    fetch(SCRIPT_URL,{
+    const ctrl=new AbortController();
+    const tid=setTimeout(()=>ctrl.abort(),12000);
+    const r=await fetch(SCRIPT_URL,{
       method:"POST",
       headers:{"Content-Type":"text/plain"},
       body:JSON.stringify({secret:SECRET,action:"set",key:k,value:v}),
-      redirect:"follow"
-    }).catch(e=>{console.warn("ss async error",e);retryQueueAdd(k,v);});
-  }catch(e){console.warn("ss error",e);retryQueueAdd(k,v);}
+      redirect:"follow",
+      signal:ctrl.signal
+    });
+    clearTimeout(tid);
+    const j=await r.json();
+    if(j.ok){
+      console.log(`✅ Sheets sync OK: ${k}`);
+      return true;
+    } else {
+      console.warn(`❌ Sheets sync erreur: ${k}`,j.error);
+      retryQueueAdd(k,v);
+      return false;
+    }
+  }catch(e){
+    console.warn(`❌ Sheets sync échoué: ${k}`,e.message);
+    retryQueueAdd(k,v);
+    return false;
+  }
 }
 
 // ── Alias compatibilité ───────────────────────────────────────────────────────
@@ -1256,12 +1273,14 @@ function EmpDash({employee,employees,onLogout,onEmpUpdate}){
 
   async function save(form){
     setSaving(true);setSyncError(false);
-    // D2 — timestamp sur chaque entrée
     const entry={...form,id:editEntry?.id||uuid('e'),updatedAt:Date.now()};
-    const next=editEntry?entries.map(e=>e.id===editEntry.id?entry:e):[...entries,entry].sort((a,b)=>(a.date||a.dateStart).localeCompare(b.date||b.dateStart));
-    setEntries(next);
-    // D1 — safeSave avec merge anti-écrasement
-    await safeSave(key,next,()=>setSyncError(true));
+    const next=editEntry
+      ?entries.map(e=>e.id===editEntry.id?entry:e)
+      :[...entries,entry].sort((a,b)=>(a.date||a.dateStart).localeCompare(b.date||b.dateStart));
+    setEntries(next.filter(e=>!e.deleted));
+    // Écriture fiable — await + feedback immédiat
+    const ok=await safeSave(key,next,()=>setSyncError(true));
+    if(!ok) setSyncError(true);
     setSaving(false);setMode(null);setEditEntry(null);
   }
   async function del(id){
@@ -1311,8 +1330,8 @@ function EmpDash({employee,employees,onLogout,onEmpUpdate}){
           </div>
           <div style={{display:"flex",gap:8,alignItems:"center"}}>
             {/* D4 — Indicateur sync */}
-            {syncError&&<div title="Erreur de synchronisation" style={{background:"rgba(197,48,48,0.3)",border:"1px solid rgba(197,48,48,0.5)",borderRadius:8,padding:"5px 9px",fontSize:11,color:"#FEB2B2",fontWeight:700}}>⚠️ Sync KO</div>}
-            {saving&&<div style={{background:"rgba(72,187,120,0.2)",border:"1px solid rgba(72,187,120,0.3)",borderRadius:8,padding:"5px 9px",fontSize:11,color:"#9AE6B4",fontWeight:700}}>⟳ Sync…</div>}
+            {syncError&&<div title="Erreur de synchronisation — données sauvées localement, seront renvoyées automatiquement" style={{background:"rgba(197,48,48,0.3)",border:"1px solid rgba(197,48,48,0.5)",borderRadius:8,padding:"5px 9px",fontSize:11,color:"#FEB2B2",fontWeight:700,cursor:"pointer"}} onClick={()=>retryQueueFlush()}>⚠️ Sync KO — Appuyer pour réessayer</div>}
+            {saving&&<div style={{background:"rgba(72,187,120,0.2)",border:"1px solid rgba(72,187,120,0.3)",borderRadius:8,padding:"5px 9px",fontSize:11,color:"#9AE6B4",fontWeight:700}}>⟳ Envoi vers Sheets…</div>}
             <button onClick={()=>setShowProfile(p=>!p)} style={{background:"rgba(255,255,255,0.12)",border:"1px solid rgba(255,255,255,0.2)",borderRadius:10,padding:"7px 13px",color:"#fff",fontSize:12,cursor:"pointer",fontWeight:600}}>👤 Profil</button>
             <button onClick={onLogout} style={{background:"rgba(255,255,255,0.12)",border:"1px solid rgba(255,255,255,0.2)",borderRadius:10,padding:"7px 13px",color:"#fff",fontSize:12,cursor:"pointer",fontWeight:600}}>Déconnexion</button>
           </div>
