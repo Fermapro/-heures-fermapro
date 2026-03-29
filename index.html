@@ -1940,6 +1940,31 @@ function AdminDash({employees:initEmp,onLogout,onEmpChange}){
 
   const BACKUP_KEY = "fp:last_backup_date";
 
+  // ── Force-sync localStorage → Sheets (corrige les données bloquées) ──────────
+  const[syncing,setSyncing]=useState(false);
+  async function forceSyncLocalToSheets(){
+    if(!GS_READY){alert("Sheets non connecté.");return;}
+    if(!window.confirm("Forcer la synchronisation de TOUTES les données locales vers Google Sheets ?\n\nCela enverra les données de cet appareil vers Sheets et les rendra visibles sur tous les appareils."))return;
+    setSyncing(true);
+    const keys=Object.keys(localStorage).filter(k=>k.startsWith("fp:"));
+    let ok=0,errors=0;
+    for(const key of keys){
+      try{
+        const value=lsg(key);
+        if(value===null)continue;
+        const r=await fetch(SCRIPT_URL,{
+          method:"POST",headers:{"Content-Type":"text/plain"},
+          body:JSON.stringify({secret:SECRET,action:"set",key,value}),
+          redirect:"follow"
+        });
+        const j=await r.json();
+        if(j.ok)ok++;else errors++;
+      }catch(e){errors++;}
+    }
+    setSyncing(false);
+    alert(`✅ Synchronisation terminée !\n\n• ${ok} clés envoyées vers Sheets\n• ${errors} erreurs\n\nActualisez l'app sur les autres appareils.`);
+    adminLog("FORCE_SYNC",`${ok} clés synchronisées depuis ${navigator.userAgent.slice(0,40)}`);
+  }
   async function backupAll(silent=false){
     const backup={version:1,date:new Date().toISOString(),employees,heures:{}};
     const months=monthsSinceStart();
@@ -2252,54 +2277,51 @@ function AdminDash({employees:initEmp,onLogout,onEmpChange}){
 
       <div style={{background:`linear-gradient(135deg,${NAVYDK},${NAVYLT})`,padding:"1.25rem 1.5rem 0"}}>
         <div style={{maxWidth:900,margin:"0 auto"}}>
-          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"1.25rem"}}>
-            <div style={{display:"flex",alignItems:"center",gap:12}}>
-              <div style={{width:38,height:38,borderRadius:11,background:"rgba(255,255,255,0.15)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20}}>📊</div>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"1rem",flexWrap:"wrap",gap:8}}>
+            <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+              <div style={{width:34,height:34,borderRadius:10,background:"rgba(255,255,255,0.15)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,flexShrink:0}}>📊</div>
               <div>
-                <div style={{color:"rgba(255,255,255,0.5)",fontSize:11,fontWeight:700,letterSpacing:1.2}}>FERMAPRO · BACK OFFICE</div>
-                <div style={{color:"#fff",fontWeight:800,fontSize:18}}>Administration</div>
+                <div style={{color:"rgba(255,255,255,0.5)",fontSize:10,fontWeight:700,letterSpacing:1}}>FERMAPRO · BACK OFFICE</div>
+                <div style={{color:"#fff",fontWeight:800,fontSize:16}}>Administration</div>
               </div>
-              {/* D4 — Indicateur sync Admin */}
               {GS_READY&&(
-                <div style={{display:"inline-flex",alignItems:"center",gap:5,background:loading?"rgba(246,173,85,0.2)":"rgba(72,187,120,0.2)",border:`1px solid ${loading?"rgba(246,173,85,0.4)":"rgba(72,187,120,0.4)"}`,borderRadius:12,padding:"3px 10px"}}>
-                  <div style={{width:6,height:6,borderRadius:"50%",background:loading?"#F6AD55":"#68D391"}}/>
-                  <span style={{color:loading?"#FEFCBF":"#C6F6D5",fontSize:10,fontWeight:700}}>{loading?"Chargement…":"Sheets connecté"}</span>
+                <div style={{display:"inline-flex",alignItems:"center",gap:4,background:loading?"rgba(246,173,85,0.2)":"rgba(72,187,120,0.2)",border:`1px solid ${loading?"rgba(246,173,85,0.4)":"rgba(72,187,120,0.4)"}`,borderRadius:10,padding:"3px 8px"}}>
+                  <div style={{width:5,height:5,borderRadius:"50%",background:loading?"#F6AD55":"#68D391"}}/>
+                  <span style={{color:loading?"#FEFCBF":"#C6F6D5",fontSize:9,fontWeight:700}}>{loading?"Chargement…":"Sheets connecté"}</span>
                 </div>
               )}
-              {/* R4 — Indicateur retry queue */}
               {(()=>{const q=lsg("fp:retry_queue")||[];return q.length>0?(
-                <div title={`${q.length} write(s) en attente de synchronisation`}
-                  style={{display:"inline-flex",alignItems:"center",gap:5,background:"rgba(197,48,48,0.25)",border:"1px solid rgba(197,48,48,0.4)",borderRadius:12,padding:"3px 10px",cursor:"pointer"}}
-                  onClick={()=>retryQueueFlush()}>
-                  <span style={{color:"#FEB2B2",fontSize:10,fontWeight:700}}>⟳ {q.length} en attente</span>
+                <div style={{display:"inline-flex",alignItems:"center",gap:4,background:"rgba(197,48,48,0.25)",border:"1px solid rgba(197,48,48,0.4)",borderRadius:10,padding:"3px 8px",cursor:"pointer"}} onClick={()=>retryQueueFlush()}>
+                  <span style={{color:"#FEB2B2",fontSize:9,fontWeight:700}}>⟳ {q.length}</span>
                 </div>
               ):null;})()}
             </div>
-            <div style={{display:"flex",gap:8}}>
-              <button onClick={()=>backupAll(false)} style={{background:"rgba(72,187,120,0.25)",border:"1px solid rgba(72,187,120,0.4)",borderRadius:10,padding:"7px 14px",color:"#9AE6B4",fontSize:12,cursor:"pointer",fontWeight:700}}>
-                💾 Sauvegarder
-                {lsg(BACKUP_KEY)&&<span style={{display:"block",fontSize:9,color:"rgba(154,230,180,0.7)",marginTop:1}}>Dernière : {lsg(BACKUP_KEY)}</span>}
+            <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+              <button onClick={()=>backupAll(false)} style={{background:"rgba(72,187,120,0.25)",border:"1px solid rgba(72,187,120,0.4)",borderRadius:8,padding:"6px 10px",color:"#9AE6B4",fontSize:11,cursor:"pointer",fontWeight:700}}>
+                💾 {lsg(BACKUP_KEY)?lsg(BACKUP_KEY).slice(5):"Sauvegarder"}
               </button>
-              <button onClick={()=>{setShowBackupList(true);loadBackupList();}} style={{background:"rgba(255,200,0,0.25)",border:"1px solid rgba(255,200,0,0.4)",borderRadius:10,padding:"7px 14px",color:"#FFE066",fontSize:12,cursor:"pointer",fontWeight:700}}>🕐 Historique</button>
-              <label style={{background:"rgba(200,150,255,0.25)",border:"1px solid rgba(200,150,255,0.4)",borderRadius:10,padding:"7px 14px",color:"#D6BCFA",fontSize:12,cursor:"pointer",fontWeight:700}}>
-                📂 Restaurer fichier
-                <input type="file" accept=".json" onChange={restoreFromBackup} style={{display:"none"}}/>
+              <button onClick={forceSyncLocalToSheets} disabled={syncing} title="Forcer la synchronisation de cet appareil vers Google Sheets" style={{background:"rgba(90,103,216,0.3)",border:"1px solid rgba(90,103,216,0.5)",borderRadius:8,padding:"6px 10px",color:"#C3DAFE",fontSize:11,cursor:syncing?"wait":"pointer",fontWeight:700}}>
+                {syncing?"⟳ Sync…":"🔄 Forcer sync"}
+              </button>
+              <button onClick={()=>{setShowBackupList(true);loadBackupList();}} style={{background:"rgba(255,200,0,0.25)",border:"1px solid rgba(255,200,0,0.4)",borderRadius:8,padding:"6px 10px",color:"#FFE066",fontSize:11,cursor:"pointer",fontWeight:700}}>🕐</button>
+              <label style={{background:"rgba(200,150,255,0.25)",border:"1px solid rgba(200,150,255,0.4)",borderRadius:8,padding:"6px 10px",color:"#D6BCFA",fontSize:11,cursor:"pointer",fontWeight:700}}>
+                📂<input type="file" accept=".json" onChange={restoreFromBackup} style={{display:"none"}}/>
               </label>
-              <button onClick={onLogout} style={{background:"rgba(255,255,255,0.1)",border:"1px solid rgba(255,255,255,0.2)",borderRadius:10,padding:"7px 14px",color:"#fff",fontSize:12,cursor:"pointer",fontWeight:600}}>Déconnexion</button>
+              <button onClick={onLogout} style={{background:"rgba(255,255,255,0.1)",border:"1px solid rgba(255,255,255,0.2)",borderRadius:8,padding:"6px 10px",color:"#fff",fontSize:11,cursor:"pointer",fontWeight:600}}>Quitter</button>
             </div>
           </div>
-          <div style={{display:"flex",gap:4}}>
+          <div style={{display:"flex",gap:2,overflowX:"auto",paddingBottom:2}}>
             {TABS.map(t=>(
-              <button key={t.id} onClick={()=>setTab(t.id)} style={{background:tab===t.id?"#fff":"rgba(255,255,255,0.08)",color:tab===t.id?NAVY:"rgba(255,255,255,0.65)",border:"none",borderRadius:"10px 10px 0 0",padding:"10px 20px",fontSize:13,fontWeight:800,cursor:"pointer",display:"flex",alignItems:"center",gap:7}}>
+              <button key={t.id} onClick={()=>setTab(t.id)} style={{background:tab===t.id?"#fff":"rgba(255,255,255,0.08)",color:tab===t.id?NAVY:"rgba(255,255,255,0.65)",border:"none",borderRadius:"8px 8px 0 0",padding:"8px 12px",fontSize:12,fontWeight:800,cursor:"pointer",display:"flex",alignItems:"center",gap:5,whiteSpace:"nowrap",flexShrink:0}}>
                 <span>{t.icon}</span>{t.label}
-                {t.id==="salaries"&&<span style={{background:tab===t.id?`${MAG}20`:"rgba(255,255,255,0.15)",color:tab===t.id?MAG:"rgba(255,255,255,0.7)",borderRadius:5,padding:"1px 7px",fontSize:11,fontWeight:800}}>{employees.length}</span>}
+                {t.id==="salaries"&&<span style={{background:tab===t.id?`${MAG}20`:"rgba(255,255,255,0.15)",color:tab===t.id?MAG:"rgba(255,255,255,0.7)",borderRadius:5,padding:"1px 6px",fontSize:10,fontWeight:800}}>{employees.length}</span>}
               </button>
             ))}
           </div>
         </div>
       </div>
 
-      <div style={{padding:"1.5rem",maxWidth:900,margin:"0 auto"}}>
+      <div style={{padding:"1rem",maxWidth:900,margin:"0 auto",overflowX:"hidden",boxSizing:"border-box"}}>
         {tab==="salaries"?<EmpManager employees={employees} onUpdate={handleUpdate}/>:
         tab==="messages"?<MessagesPanel employees={employees}/>:
         tab==="journal"?<JournalPanel/>:(
@@ -2309,22 +2331,22 @@ function AdminDash({employees:initEmp,onLogout,onEmpChange}){
               <button onClick={exportCSV} style={{background:NAVY,color:"#fff",border:"none",borderRadius:10,padding:"9px 18px",fontSize:13,fontWeight:700,cursor:"pointer",display:"flex",alignItems:"center",gap:8}}>📥 Exporter Excel</button>
               {detailId&&<button onClick={()=>{setDetailId(null);setDetailTab("all");}} style={{background:`${MAG}12`,color:MAG,border:`1.5px solid ${MAG}30`,borderRadius:10,padding:"9px 14px",fontSize:13,fontWeight:700,cursor:"pointer"}}>← Retour</button>}
             </div>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12,marginBottom:"1.5rem"}}>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginBottom:"1rem"}}>
               {[{v:fmtH(grandH),l:"Total heures",c:NAVY},{v:`${grandAbs}j`,l:"Total absences",c:"#C53030"},{v:active,l:"Salariés actifs",c:MAG}].map(({v,l,c})=>(
-                <div key={l} style={{background:"#fff",borderRadius:16,padding:"1.1rem",textAlign:"center",boxShadow:"0 2px 10px rgba(0,0,0,0.06)",borderTop:`3px solid ${c}`}}>
-                  <div style={{fontSize:24,fontWeight:800,color:c}}>{v}</div>
-                  <div style={{fontSize:11,color:"#718096",marginTop:4,fontWeight:700,letterSpacing:0.4}}>{l.toUpperCase()}</div>
+                <div key={l} style={{background:"#fff",borderRadius:14,padding:"0.85rem 0.5rem",textAlign:"center",boxShadow:"0 2px 10px rgba(0,0,0,0.06)",borderTop:`3px solid ${c}`,minWidth:0}}>
+                  <div style={{fontSize:20,fontWeight:800,color:c,wordBreak:"break-all"}}>{v}</div>
+                  <div style={{fontSize:9,color:"#718096",marginTop:4,fontWeight:700,letterSpacing:0.3}}>{l.toUpperCase()}</div>
                 </div>
               ))}
             </div>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:"1.5rem"}}>
-              <div style={{background:"#fff",borderRadius:16,padding:"1rem 1.25rem",boxShadow:"0 2px 10px rgba(0,0,0,0.06)",borderTop:"3px solid #2B6CB0",display:"flex",alignItems:"center",gap:12}}>
-                <div style={{fontSize:28}}>🎟</div>
-                <div><div style={{fontSize:22,fontWeight:800,color:"#2B6CB0"}}>{totalTickets}</div><div style={{fontSize:11,color:"#718096",fontWeight:700,letterSpacing:0.4}}>TICKETS RESTAURANT</div></div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:"1rem"}}>
+              <div style={{background:"#fff",borderRadius:14,padding:"0.85rem 1rem",boxShadow:"0 2px 10px rgba(0,0,0,0.06)",borderTop:"3px solid #2B6CB0",display:"flex",alignItems:"center",gap:10,minWidth:0}}>
+                <div style={{fontSize:24,flexShrink:0}}>🎟</div>
+                <div style={{minWidth:0}}><div style={{fontSize:20,fontWeight:800,color:"#2B6CB0"}}>{totalTickets}</div><div style={{fontSize:9,color:"#718096",fontWeight:700,letterSpacing:0.3}}>TICKETS</div></div>
               </div>
-              <div style={{background:"#fff",borderRadius:16,padding:"1rem 1.25rem",boxShadow:"0 2px 10px rgba(0,0,0,0.06)",borderTop:"3px solid #B7791F",display:"flex",alignItems:"center",gap:12}}>
-                <div style={{fontSize:28}}>🧺</div>
-                <div><div style={{fontSize:22,fontWeight:800,color:"#B7791F"}}>{totalPaniers}</div><div style={{fontSize:11,color:"#718096",fontWeight:700,letterSpacing:0.4}}>PANIERS REPAS</div></div>
+              <div style={{background:"#fff",borderRadius:14,padding:"0.85rem 1rem",boxShadow:"0 2px 10px rgba(0,0,0,0.06)",borderTop:"3px solid #B7791F",display:"flex",alignItems:"center",gap:10,minWidth:0}}>
+                <div style={{fontSize:24,flexShrink:0}}>🧺</div>
+                <div style={{minWidth:0}}><div style={{fontSize:20,fontWeight:800,color:"#B7791F"}}>{totalPaniers}</div><div style={{fontSize:9,color:"#718096",fontWeight:700,letterSpacing:0.3}}>PANIERS</div></div>
               </div>
             </div>
 
