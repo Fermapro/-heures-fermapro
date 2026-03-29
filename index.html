@@ -274,24 +274,28 @@ async function safeSave(key,newEntries,onSyncError){
     const j=await r.json();
     const remote=(j.ok&&Array.isArray(j.data))?j.data:[];
 
-    // ── R3 : Merge par timestamp ──────────────────────────────────
-    // Construire une map id→entrée pour chaque source
+    // ── Sheets = source de vérité pour les entrées existantes ────
+    // Local gagne UNIQUEMENT pour les nouvelles entrées (absentes de Sheets)
+    // et pour les modifications très récentes (< 30s)
     const remoteMap=new Map(remote.map(e=>[e.id,e]));
     const localMap=new Map(newEntries.map(e=>[e.id,e]));
     const allIds=new Set([...remoteMap.keys(),...localMap.keys()]);
+    const now30s=Date.now()-30000; // 30 secondes
 
     const merged=[];
     allIds.forEach(id=>{
       const loc=localMap.get(id);
       const rem=remoteMap.get(id);
       if(loc&&rem){
-        // Les deux existent : garder le plus récent (updatedAt)
+        // Les deux existent :
+        // - Si modification locale très récente (< 30s) → local gagne (vient d'être saisie)
+        // - Sinon → Sheets gagne (source de vérité)
         const locTs=loc.updatedAt||0;
         const remTs=rem.updatedAt||0;
-        merged.push(locTs>=remTs?loc:rem);
+        if(locTs>now30s&&locTs>remTs) merged.push(loc); // saisie fraîche
+        else merged.push(rem); // Sheets fait foi
       } else {
-        // N'existe que d'un côté
-        merged.push(loc||rem);
+        merged.push(loc||rem); // n'existe que d'un côté → on garde
       }
     });
 
@@ -1242,32 +1246,35 @@ function EmpDash({employee,employees,onLogout,onEmpUpdate}){
 
   useEffect(()=>{
     setLoading(true);setMode(null);setEditEntry(null);
-    // Fix3 — Toujours lire depuis Sheets en priorité, merger avec localStorage
+    // Sheets = source de vérité absolue
+    // Local = fallback uniquement si Sheets est inaccessible
     sg(key).then(remote=>{
-      const local=lsg(key)||[];
-      if(!remote||remote.length===0){
-        setEntries(local);setLoading(false);return;
+      if(remote&&remote.length>0){
+        // Sheets a des données → les prendre comme base
+        // Ajouter uniquement les entrées locales plus récentes NON présentes dans Sheets
+        const local=lsg(key)||[];
+        const remoteIds=new Set(remote.map(e=>e.id));
+        // Entrées locales absentes de Sheets ET avec updatedAt récent (< 5 min)
+        const recentLocal=local.filter(e=>
+          !remoteIds.has(e.id)&&
+          !e.deleted&&
+          (Date.now()-(e.updatedAt||0))<5*60*1000
+        );
+        const merged=[...remote,...recentLocal]
+          .filter(e=>!e.deleted)
+          .sort((a,b)=>(a.date||a.dateStart||"").localeCompare(b.date||b.dateStart||""));
+        lss(key,merged); // mettre à jour le local avec la vérité Sheets
+        setEntries(merged);
+      } else {
+        // Sheets vide ou inaccessible → fallback local
+        const local=(lsg(key)||[]).filter(e=>!e.deleted);
+        setEntries(local);
       }
-      // Merger remote + local (même logique que safeSave)
-      const remoteMap=new Map(remote.map(e=>[e.id,e]));
-      const localMap=new Map(local.map(e=>[e.id,e]));
-      const allIds=new Set([...remoteMap.keys(),...localMap.keys()]);
-      const merged=[];
-      allIds.forEach(id=>{
-        const loc=localMap.get(id);
-        const rem=remoteMap.get(id);
-        if(loc&&rem) merged.push((loc.updatedAt||0)>=(rem.updatedAt||0)?loc:rem);
-        else merged.push(loc||rem);
-      });
-      const now=Date.now();
-      const final=merged
-        .filter(e=>!e.deleted||(now-(e.deletedAt||0)<7*86400000))
-        .sort((a,b)=>(a.date||a.dateStart||"").localeCompare(b.date||b.dateStart||""));
-      lss(key,final);
-      setEntries(final.filter(e=>!e.deleted));
       setLoading(false);
     }).catch(()=>{
-      setEntries(lsg(key)||[]);setLoading(false);
+      // Réseau coupé → local uniquement
+      setEntries((lsg(key)||[]).filter(e=>!e.deleted));
+      setLoading(false);
     });
   },[key]);
 
