@@ -373,22 +373,23 @@ function isFerie(ds){return FERIES_2026.has(ds);}
 function isWeekend(ds){const d=new Date(ds);return d.getDay()===0||d.getDay()===6;}
 
 const CONTRATS=[
-  {id:"cdi",  label:"CDI",         color:"#2F855A",bg:"#F0FFF4"},
-  {id:"cdd",  label:"CDD",         color:"#2B6CB0",bg:"#EBF8FF"},
-  {id:"inte", label:"Intérim",     color:"#B7791F",bg:"#FFFAF0"},
-  {id:"stage",label:"Stage",       color:"#553C9A",bg:"#FAF5FF"},
-  {id:"app",  label:"Apprentissage",color:"#C05621",bg:"#FFFAF0"},
+  {id:"cdi",     label:"CDI",           color:"#2F855A",bg:"#F0FFF4"},
+  {id:"cdd",     label:"CDD",           color:"#2B6CB0",bg:"#EBF8FF"},
+  {id:"forfait", label:"Forfait jours", color:"#6B46C1",bg:"#FAF5FF"},
+  {id:"inte",    label:"Intérim",       color:"#B7791F",bg:"#FFFAF0"},
+  {id:"stage",   label:"Stage",         color:"#553C9A",bg:"#FAF5FF"},
+  {id:"app",     label:"Apprentissage", color:"#C05621",bg:"#FFFAF0"},
 ];
 function ct(id){return CONTRATS.find(c=>c.id===id)||{label:id||"",color:"#718096",bg:"#F7FAFC"};}
 // IDs PERMANENTS — ne jamais modifier ces IDs
 // #1 — PINs stockés en SHA-256 (jamais en clair dans le code ni dans Sheets)
 const INIT_EMP=[
-  {id:"emp_1774035340883",name:"Valentin Chanonat", pin:"0ffe1abd1a08215353c233d6e009613e95eec4253832a761af28ff37ac5a150c",contractType:"cdi", entryDate:"2020-10-01",photo:"",email:"",phone:"",mealType:"ticket"},
-  {id:"emp_1774035394447",name:"Alexia Da Silva",   pin:"edee29f882543b956620b26d0ee0e7e950399b1c4222f5de05e06425b4c995e9",contractType:"cdi", entryDate:"",photo:"",email:"",phone:"",mealType:"ticket"},
-  {id:"emp_1774035408617",name:"Julien Pierre",     pin:"318aee3fed8c9d040d35a7fc1fa776fb31303833aa2de885354ddf3d44d8fb69",contractType:"cdi", entryDate:"",photo:"",email:"",phone:"",mealType:"ticket"},
-  {id:"emp_1774035420115",name:"Charles Malesa",    pin:"79f06f8fde333461739f220090a23cb2a79f6d714bee100d0e4b4af249294619",contractType:"cdi", entryDate:"",photo:"",email:"",phone:"",mealType:"ticket"},
-  {id:"emp_1774035432347",name:"Sacha Bedu",        pin:"c1f330d0aff31c1c87403f1e4347bcc21aff7c179908723535f2b31723702525",contractType:"cdi", entryDate:"",photo:"",email:"",phone:"",mealType:"ticket"},
-  {id:"emp_1774035448182",name:"Anthony Gatien",    pin:"d7697570462f7562b83e81258de0f1e41832e98072e44c36ec8efec46786e24e",contractType:"cdi", entryDate:"",photo:"",email:"",phone:"",mealType:"ticket"},
+  {id:"emp_1774035340883",name:"Valentin Chanonat", pin:"0ffe1abd1a08215353c233d6e009613e95eec4253832a761af28ff37ac5a150c",contractType:"cdi",     entryDate:"2020-10-01",photo:"",email:"",phone:"",mealType:"ticket"},
+  {id:"emp_1774035394447",name:"Alexia Da Silva",   pin:"edee29f882543b956620b26d0ee0e7e950399b1c4222f5de05e06425b4c995e9",contractType:"cdi",     entryDate:"",photo:"",email:"",phone:"",mealType:"ticket"},
+  {id:"emp_1774035408617",name:"Julien Pierre",     pin:"318aee3fed8c9d040d35a7fc1fa776fb31303833aa2de885354ddf3d44d8fb69",contractType:"cdi",     entryDate:"",photo:"",email:"",phone:"",mealType:"ticket"},
+  {id:"emp_1774035420115",name:"Charles Malesa",    pin:"79f06f8fde333461739f220090a23cb2a79f6d714bee100d0e4b4af249294619",contractType:"cdi",     entryDate:"",photo:"",email:"",phone:"",mealType:"ticket"},
+  {id:"emp_1774035432347",name:"Sacha Bedu",        pin:"c1f330d0aff31c1c87403f1e4347bcc21aff7c179908723535f2b31723702525",contractType:"cdi",     entryDate:"",photo:"",email:"",phone:"",mealType:"ticket"},
+  {id:"emp_1774035448182",name:"Anthony Gatien",    pin:"d7697570462f7562b83e81258de0f1e41832e98072e44c36ec8efec46786e24e",contractType:"forfait",entryDate:"",photo:"",email:"",phone:"",mealType:"panier"},
 ];
 const ABS=[
   {id:"cp",   label:"Congés payés",        color:"#2F855A",bg:"#F0FFF4",icon:"🏖"},
@@ -958,7 +959,35 @@ function WorkForm({initial,onSave,onCancel,ym}){
   );
 }
 
-// ── FORM ABSENCE ──────────────────────────────────────────────────────────────
+// ── FORM FORFAIT JOURS (sans horaires, juste présence) ───────────────────────
+function ForfaitForm({initial,onSave,onCancel,ym}){
+  const minDate=ym?`${ym}-01`:"";
+  const maxDate=ym?(()=>{const[y,m]=ym.split("-").map(Number);const last=new Date(y,m,0).getDate();return `${ym}-${String(last).padStart(2,"0")}`;})():"";
+  const[form,setForm]=useState({date:minDate||today(),note:"",...initial});
+  const set=k=>v=>setForm(f=>({...f,[k]:v}));
+  const dateOk=!ym||(!form.date?false:form.date>=minDate&&form.date<=maxDate);
+  return(
+    <Card style={{marginBottom:"1rem",border:`2px solid #6B46C115`}}>
+      <h3 style={{fontSize:15,fontWeight:800,color:"#6B46C1",margin:"0 0 1.25rem",display:"flex",alignItems:"center",gap:8}}>
+        <span style={{background:"#FAF5FF",color:"#6B46C1",width:28,height:28,borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,flexShrink:0}}>{initial?"✏":"📅"}</span>
+        {initial?"Modifier le jour":"Saisir un jour travaillé"}
+      </h3>
+      <div style={{background:"#FAF5FF",border:"1.5px solid #D6BCFA",borderRadius:10,padding:"8px 12px",fontSize:12,color:"#553C9A",fontWeight:600,marginBottom:14}}>
+        📋 Forfait jours — la présence compte automatiquement pour le panier repas
+      </div>
+      <Inp label="Date" type="date" value={form.date} min={minDate} max={maxDate}
+        onChange={e=>{const v=e.target.value;if(ym&&v&&(v<minDate||v>maxDate))return;set("date")(v);}}/>
+      {!dateOk&&form.date&&<div style={{background:"#FFF5F5",border:"1.5px solid #FC8181",borderRadius:8,padding:"6px 10px",fontSize:12,color:"#C53030",fontWeight:700,marginBottom:8}}>⚠️ La date doit être en {ym?fmtYM(ym):""}</div>}
+      <Inp label="Note / Chantier" value={form.note} onChange={e=>set("note")(e.target.value)} placeholder="Optionnel"/>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+        <Btn variant="outline" onClick={onCancel}>Annuler</Btn>
+        <Btn onClick={()=>onSave({...form,type:"forfait",note:sanitize(form.note,200)})} disabled={!form.date||!dateOk}>Enregistrer</Btn>
+      </div>
+    </Card>
+  );
+}
+
+
 function AbsForm({initial,onSave,onCancel,ym}){
   const minDate=ym?`${ym}-01`:"";
   const maxDate=ym?(()=>{const[y,m]=ym.split("-").map(Number);const last=new Date(y,m,0).getDate();return `${ym}-${String(last).padStart(2,"0")}`;})():"";
@@ -1328,9 +1357,10 @@ function EmpDash({employee,employees,onLogout,onEmpUpdate}){
     if(!ok) setSyncError(true);
   }
 
-  const work=entries.filter(e=>e.type==="work"||!e.type);
+  const work=entries.filter(e=>e.type==="work"||e.type==="forfait"||!e.type);
   const abs=entries.filter(e=>e.type==="absence");
-  const totalH=work.reduce((s,e)=>s+calcH(e.startTime,e.endTime,e.breakMin),0);
+  const totalH=work.filter(e=>e.type!=="forfait").reduce((s,e)=>s+calcH(e.startTime,e.endTime,e.breakMin),0);
+  const totalForfaitJours=work.filter(e=>e.type==="forfait").length;
   const totalAbsDays=abs.reduce((s,e)=>s+Number(e.nbDays||1),0);
   const shown=filter==="work"?work:filter==="absence"?abs:entries;
 
@@ -1421,9 +1451,15 @@ function EmpDash({employee,employees,onLogout,onEmpUpdate}){
           </div>
         )}
 
-        {mode==="work"&&<WorkForm ym={ym} onSave={save} onCancel={()=>setMode(null)}/>}
+        {mode==="work"&&(employee.contractType==="forfait"
+          ?<ForfaitForm ym={ym} onSave={save} onCancel={()=>setMode(null)}/>
+          :<WorkForm ym={ym} onSave={save} onCancel={()=>setMode(null)}/>)}
         {mode==="absence"&&<AbsForm ym={ym} onSave={save} onCancel={()=>setMode(null)}/>}
-        {editEntry&&(editEntry.type==="absence"?<AbsForm ym={ym} initial={editEntry} onSave={save} onCancel={()=>setEditEntry(null)}/>:<WorkForm ym={ym} initial={editEntry} onSave={save} onCancel={()=>setEditEntry(null)}/>)}
+        {editEntry&&(editEntry.type==="absence"
+          ?<AbsForm ym={ym} initial={editEntry} onSave={save} onCancel={()=>setEditEntry(null)}/>
+          :editEntry.type==="forfait"||employee.contractType==="forfait"
+            ?<ForfaitForm ym={ym} initial={editEntry} onSave={save} onCancel={()=>setEditEntry(null)}/>
+            :<WorkForm ym={ym} initial={editEntry} onSave={save} onCancel={()=>setEditEntry(null)}/>)}
 
         {loading?<Spinner/>:(
           <>
@@ -1444,20 +1480,28 @@ function EmpDash({employee,employees,onLogout,onEmpUpdate}){
               <div style={{display:"flex",flexDirection:"column",gap:10}}>
                 {shown.map(entry=>{
                   const isAbs=entry.type==="absence";
+                  const isForfait=entry.type==="forfait";
                   const typ=isAbs?at(entry.absType):null;
-                  const h=isAbs?null:calcH(entry.startTime,entry.endTime,entry.breakMin);
-                  const accent=isAbs?typ.color:MAG;
+                  const h=isAbs||isForfait?null:calcH(entry.startTime,entry.endTime,entry.breakMin);
+                  const accent=isAbs?typ.color:isForfait?"#6B46C1":MAG;
                   return(
                     <div key={entry.id} style={{background:"#fff",borderRadius:16,padding:"1rem 1.25rem",boxShadow:"0 2px 10px rgba(0,0,0,0.05)",borderLeft:`4px solid ${accent}`,display:"flex",alignItems:"center",gap:12}}>
                       {isAbs&&<span style={{fontSize:22,flexShrink:0}}>{typ.icon}</span>}
+                      {isForfait&&<span style={{fontSize:22,flexShrink:0}}>📅</span>}
                       <div style={{flex:1,minWidth:0}}>
                         <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:2,flexWrap:"wrap"}}>
                           <span style={{fontWeight:800,fontSize:14,color:NAVY}}>{fmtDate(entry.date||entry.dateStart)}</span>
                           {isAbs&&<Badge color={typ.color} bg={typ.bg}>{typ.label}</Badge>}
+                          {isForfait&&<Badge color="#6B46C1" bg="#FAF5FF">Forfait jour</Badge>}
                         </div>
                         {isAbs?(
                           <div style={{color:"#718096",fontSize:12}}>
                             {entry.halfDay==="half"?"Demi-journée":(entry.dateEnd&&entry.dateEnd!==entry.dateStart?`→ ${fmtDate(entry.dateEnd)}`:"Journée entière")}
+                            {entry.note&&<div style={{marginTop:3,color:"#4A5568",fontStyle:"italic"}}>"{entry.note}"</div>}
+                          </div>
+                        ):isForfait?(
+                          <div style={{color:"#718096",fontSize:12}}>
+                            Journée complète — panier repas inclus
                             {entry.note&&<div style={{marginTop:3,color:"#4A5568",fontStyle:"italic"}}>"{entry.note}"</div>}
                           </div>
                         ):(
@@ -1468,7 +1512,7 @@ function EmpDash({employee,employees,onLogout,onEmpUpdate}){
                         )}
                       </div>
                       <div style={{textAlign:"right",flexShrink:0}}>
-                        <div style={{fontWeight:800,fontSize:18,color:accent}}>{isAbs?`${entry.nbDays||1}j`:fmtH(h)}</div>
+                        <div style={{fontWeight:800,fontSize:18,color:accent}}>{isAbs?`${entry.nbDays||1}j`:isForfait?"1j":fmtH(h)}</div>
                         <div style={{display:"flex",gap:5,marginTop:5,justifyContent:"flex-end"}}>
                           <button onClick={()=>{setEditEntry(entry);setMode(null);}} style={{background:`${NAVY}10`,border:"none",borderRadius:7,padding:"4px 9px",fontSize:12,color:NAVY,cursor:"pointer"}}>✏</button>
                           <button onClick={()=>{if(window.confirm("Supprimer cette entrée ?"))del(entry.id);}} style={{background:"#FFF5F5",border:"none",borderRadius:7,padding:"4px 9px",fontSize:12,color:"#C53030",cursor:"pointer"}}>🗑</button>
@@ -1919,6 +1963,151 @@ function JournalPanel(){
 }
 
 // ── BACK OFFICE ADMIN ─────────────────────────────────────────────────────────
+// ── PRIMES & COMMISSIONS ─────────────────────────────────────────────────────
+const PRIME_TYPES=[
+  {id:"commission",label:"Commission",     icon:"📈",color:"#2F855A",bg:"#F0FFF4"},
+  {id:"prime",     label:"Prime",          icon:"⭐",color:"#B7791F",bg:"#FFFAF0"},
+  {id:"bonus",     label:"Bonus",          icon:"🎯",color:"#2B6CB0",bg:"#EBF8FF"},
+  {id:"acompte",   label:"Acompte",        icon:"💸",color:"#C53030",bg:"#FFF5F5"},
+  {id:"autre",     label:"Autre",          icon:"💶",color:"#553C9A",bg:"#FAF5FF"},
+];
+function pt(id){return PRIME_TYPES.find(t=>t.id===id)||PRIME_TYPES[PRIME_TYPES.length-1];}
+
+function PrimesPanel({employees,ym}){
+  const key=`fp:primes:${ym}`;
+  const[primes,setPrimes]=useState([]);
+  const[loading,setLoading]=useState(true);
+  const[form,setForm]=useState({empId:"",type:"commission",amount:"",note:""});
+  const[saving,setSaving]=useState(false);
+  const[err,setErr]=useState("");
+
+  useEffect(()=>{
+    setLoading(true);
+    sg(key).then(d=>{setPrimes((d||[]).filter(p=>!p.deleted));setLoading(false);}).catch(()=>setLoading(false));
+  },[key]);
+
+  const actifs=employees.filter(e=>!e.archived&&!e.deleted);
+
+  async function addPrime(){
+    if(!form.empId){setErr("Sélectionnez un salarié.");return;}
+    if(!form.amount||isNaN(Number(form.amount))||Number(form.amount)<=0){setErr("Montant invalide.");return;}
+    setSaving(true);setErr("");
+    const entry={
+      id:uuid("p"),
+      empId:form.empId,
+      type:form.type,
+      amount:Number(form.amount),
+      note:sanitize(form.note,200),
+      date:new Date().toISOString().slice(0,10),
+      ym,
+      createdAt:Date.now(),
+      updatedAt:Date.now()
+    };
+    const next=[...primes,entry];
+    await ss(key,next);
+    setPrimes(next);
+    setForm({empId:"",type:"commission",amount:"",note:""});
+    adminLog("PRIME_AJOUT",`${employees.find(e=>e.id===form.empId)?.name||form.empId} — ${pt(form.type).label} ${form.amount}€`);
+    setSaving(false);
+  }
+
+  async function delPrime(id){
+    if(!window.confirm("Supprimer cette ligne ?"))return;
+    const next=primes.filter(p=>p.id!==id);
+    await ss(key,next);
+    setPrimes(next);
+    adminLog("PRIME_SUPPRESSION",`Prime ${id} supprimée`);
+  }
+
+  // Totaux par salarié
+  const totaux={};
+  primes.forEach(p=>{if(!totaux[p.empId])totaux[p.empId]={};if(!totaux[p.empId][p.type])totaux[p.empId][p.type]=0;totaux[p.empId][p.type]+=p.amount;});
+  const totalMois=primes.reduce((s,p)=>s+p.amount,0);
+
+  return(
+    <div style={{maxWidth:700,margin:"0 auto"}}>
+      {/* Formulaire d'ajout */}
+      <Card style={{marginBottom:"1.25rem"}}>
+        <div style={{fontWeight:800,color:NAVY,fontSize:15,marginBottom:"1rem"}}>💶 Ajouter une prime / commission</div>
+        {err&&<div style={{background:"#FFF5F5",border:"1.5px solid #FC8181",borderRadius:8,padding:"8px 12px",fontSize:13,color:"#C53030",fontWeight:700,marginBottom:12}}>{err}</div>}
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
+          <div>
+            <label style={{display:"block",fontSize:11,fontWeight:700,color:"#4A5568",marginBottom:6,textTransform:"uppercase",letterSpacing:0.5}}>Salarié</label>
+            <select value={form.empId} onChange={e=>{setForm(f=>({...f,empId:e.target.value}));setErr("");}}
+              style={{width:"100%",padding:"9px 12px",borderRadius:10,border:"1.5px solid #E2E8F0",fontSize:13,color:NAVY,background:"#fff",outline:"none"}}>
+              <option value="">— Choisir —</option>
+              {actifs.map(e=><option key={e.id} value={e.id}>{e.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={{display:"block",fontSize:11,fontWeight:700,color:"#4A5568",marginBottom:6,textTransform:"uppercase",letterSpacing:0.5}}>Type</label>
+            <select value={form.type} onChange={e=>setForm(f=>({...f,type:e.target.value}))}
+              style={{width:"100%",padding:"9px 12px",borderRadius:10,border:"1.5px solid #E2E8F0",fontSize:13,color:NAVY,background:"#fff",outline:"none"}}>
+              {PRIME_TYPES.map(t=><option key={t.id} value={t.id}>{t.icon} {t.label}</option>)}
+            </select>
+          </div>
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 2fr",gap:10,marginBottom:10}}>
+          <div>
+            <label style={{display:"block",fontSize:11,fontWeight:700,color:"#4A5568",marginBottom:6,textTransform:"uppercase",letterSpacing:0.5}}>Montant (€)</label>
+            <input type="number" min="0" step="0.01" value={form.amount}
+              onChange={e=>setForm(f=>({...f,amount:e.target.value}))}
+              placeholder="0.00"
+              style={{width:"100%",padding:"9px 12px",borderRadius:10,border:"1.5px solid #E2E8F0",fontSize:13,color:NAVY,outline:"none",boxSizing:"border-box"}}/>
+          </div>
+          <Inp label="Note / Motif" value={form.note} onChange={e=>setForm(f=>({...f,note:e.target.value}))} placeholder="Optionnel — ex: CA juillet, objectif atteint…"/>
+        </div>
+        <Btn onClick={addPrime} disabled={saving}>{saving?"Enregistrement…":"+ Ajouter"}</Btn>
+      </Card>
+
+      {/* Totaux du mois */}
+      {primes.length>0&&(
+        <Card style={{marginBottom:"1.25rem",background:`linear-gradient(135deg,${NAVY}08,${MAG}08)`}}>
+          <div style={{fontWeight:800,color:NAVY,fontSize:14,marginBottom:"0.75rem"}}>📊 Synthèse {fmtYM(ym)}</div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"0.75rem"}}>
+            <span style={{color:"#4A5568",fontSize:13}}>Total du mois</span>
+            <span style={{fontWeight:800,fontSize:20,color:MAG}}>{totalMois.toLocaleString("fr-FR",{minimumFractionDigits:2})} €</span>
+          </div>
+          {actifs.filter(e=>totaux[e.id]).map(emp=>(
+            <div key={emp.id} style={{borderTop:"1px solid #E2E8F0",paddingTop:8,marginTop:8}}>
+              <div style={{fontWeight:700,color:NAVY,fontSize:13,marginBottom:4}}>{emp.name}</div>
+              {Object.entries(totaux[emp.id]||{}).map(([type,amt])=>{
+                const t=pt(type);
+                return<div key={type} style={{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:2}}>
+                  <span style={{color:t.color,fontWeight:600}}>{t.icon} {t.label}</span>
+                  <span style={{fontWeight:700,color:t.color}}>{amt.toLocaleString("fr-FR",{minimumFractionDigits:2})} €</span>
+                </div>;
+              })}
+            </div>
+          ))}
+        </Card>
+      )}
+
+      {/* Liste des lignes */}
+      <Card>
+        <div style={{fontWeight:800,color:NAVY,fontSize:14,marginBottom:"0.75rem"}}>📋 Détail {fmtYM(ym)}</div>
+        {loading?<div style={{textAlign:"center",color:"#718096",padding:"1rem"}}>Chargement…</div>
+        :primes.length===0?<div style={{textAlign:"center",color:"#A0AEC0",padding:"1.5rem",fontSize:14}}>Aucune prime / commission ce mois-ci</div>
+        :primes.map(p=>{
+          const emp=employees.find(e=>e.id===p.empId);
+          const t=pt(p.type);
+          return(
+            <div key={p.id} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 0",borderBottom:"1px solid #F0F0F0"}}>
+              <div style={{width:36,height:36,borderRadius:10,background:t.bg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,flexShrink:0}}>{t.icon}</div>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontWeight:700,color:NAVY,fontSize:13}}>{emp?.name||"?"}</div>
+                <div style={{fontSize:11,color:"#718096"}}>{t.label}{p.note?` — ${p.note}`:""} · {p.date}</div>
+              </div>
+              <div style={{fontWeight:800,fontSize:15,color:t.color,whiteSpace:"nowrap"}}>{p.amount.toLocaleString("fr-FR",{minimumFractionDigits:2})} €</div>
+              <button onClick={()=>delPrime(p.id)} style={{background:"#FFF5F5",border:"none",borderRadius:8,padding:"6px 10px",color:"#C53030",cursor:"pointer",fontSize:13,fontWeight:700,flexShrink:0}}>✕</button>
+            </div>
+          );
+        })}
+      </Card>
+    </div>
+  );
+}
+
 function AdminDash({employees:initEmp,onLogout,onEmpChange}){
   const[employees,setEmployees]=useState(initEmp);
   const[tab,setTab]=useState("heures");
@@ -1958,30 +2147,32 @@ function AdminDash({employees:initEmp,onLogout,onEmpChange}){
   },[ym,tab,employees,refreshTick]);
 
   function eWork(id){return(allData[id]||[]).filter(e=>!e.deleted&&(e.type==="work"||!e.type));}
+  function eForfait(id){return(allData[id]||[]).filter(e=>!e.deleted&&e.type==="forfait");}
   function eAbs(id){return(allData[id]||[]).filter(e=>!e.deleted&&e.type==="absence");}
   function eTotH(id){return eWork(id).reduce((s,e)=>s+calcH(e.startTime,e.endTime,e.breakMin),0);}
   function eTotAbs(id){return eAbs(id).reduce((s,e)=>s+Number(e.nbDays||1),0);}
-  // Calcul corrigé — seuil >6h effectives + exclusion jours d'absence
   function countMealDays(id){
     const entries=allData[id]||[];
-    const workEntries=entries.filter(e=>e.type==="work"||!e.type);
-    const absEntries=entries.filter(e=>e.type==="absence");
-    // Construire le Set des dates d'absence
+    const workEntries=entries.filter(e=>!e.deleted&&(e.type==="work"||!e.type));
+    const forfaitEntries=entries.filter(e=>!e.deleted&&e.type==="forfait");
+    const absEntries=entries.filter(e=>!e.deleted&&e.type==="absence");
     const absDates=new Set();
     absEntries.forEach(e=>{
       let cur=new Date(e.dateStart);
       const end=new Date(e.dateEnd||e.dateStart);
       while(cur<=end){absDates.add(cur.toISOString().slice(0,10));cur.setDate(cur.getDate()+1);}
     });
-    // Agréger les heures par date
+    // Heures normales > 6h
     const hoursByDate={};
     workEntries.forEach(e=>{
       if(!e.date)return;
       if(!hoursByDate[e.date])hoursByDate[e.date]=0;
       hoursByDate[e.date]+=calcH(e.startTime,e.endTime,e.breakMin);
     });
-    // Compter les dates > 6h sans absence
-    return Object.entries(hoursByDate).filter(([date,h])=>h>6&&!absDates.has(date)).length;
+    const workDays=Object.entries(hoursByDate).filter(([date,h])=>h>6&&!absDates.has(date)).length;
+    // Forfait jours : chaque entrée = 1 jour éligible (absence exclue)
+    const forfaitDays=forfaitEntries.filter(e=>e.date&&!absDates.has(e.date)).length;
+    return workDays+forfaitDays;
   }
 
   const grandH=employees.reduce((s,e)=>s+eTotH(e.id),0);
@@ -2295,7 +2486,7 @@ function AdminDash({employees:initEmp,onLogout,onEmpChange}){
   const dH=detailId?eTotH(detailId):0;
   const dAbsDays=detailId?eTotAbs(detailId):0;
   const dShown=detailTab==="work"?dWork:detailTab==="absence"?dAbs:dAll;
-  const TABS=[{id:"heures",icon:"📊",label:"Heures & Absences"},{id:"salaries",icon:"👥",label:"Salariés"},{id:"messages",icon:"💬",label:"Messages"},{id:"journal",icon:"📋",label:"Journal"}];
+  const TABS=[{id:"heures",icon:"📊",label:"Heures & Absences"},{id:"salaries",icon:"👥",label:"Salariés"},{id:"primes",icon:"💶",label:"Primes"},{id:"messages",icon:"💬",label:"Messages"},{id:"journal",icon:"📋",label:"Journal"}];
 
   return(
     <div style={{minHeight:"100vh",background:"#F4F6FA"}}>
@@ -2377,6 +2568,7 @@ function AdminDash({employees:initEmp,onLogout,onEmpChange}){
       <div style={{padding:"1rem",maxWidth:900,margin:"0 auto",overflowX:"hidden",boxSizing:"border-box"}}>
         {tab==="salaries"?<EmpManager employees={employees} onUpdate={handleUpdate}/>:
         tab==="messages"?<MessagesPanel employees={employees}/>:
+        tab==="primes"?<PrimesPanel employees={employees} ym={ym}/>:
         tab==="journal"?<JournalPanel/>:(
           <>
             <div style={{display:"flex",gap:10,marginBottom:"1.5rem",flexWrap:"wrap",alignItems:"center"}}>
