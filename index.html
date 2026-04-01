@@ -959,7 +959,47 @@ function WorkForm({initial,onSave,onCancel,ym}){
   );
 }
 
-// ── FORM FORFAIT JOURS (sans horaires, juste présence) ───────────────────────
+// ── FORM COMMISSION (saisie salarié) ─────────────────────────────────────────
+function CommissionForm({onSave,onCancel,ym}){
+  const[form,setForm]=useState({montant:"",chantier:"",note:"",date:(ym?`${ym}-01`:today())});
+  const set=k=>v=>setForm(f=>({...f,[k]:v}));
+  const minDate=ym?`${ym}-01`:"";
+  const maxDate=ym?(()=>{const[y,m]=ym.split("-").map(Number);const last=new Date(y,m,0).getDate();return `${ym}-${String(last).padStart(2,"0")}`;})():"";
+  const montantOk=form.montant&&!isNaN(Number(form.montant))&&Number(form.montant)>0;
+  return(
+    <Card style={{marginBottom:"1rem",border:"2px solid #2F855A30"}}>
+      <h3 style={{fontSize:15,fontWeight:800,color:"#2F855A",margin:"0 0 1.25rem",display:"flex",alignItems:"center",gap:8}}>
+        <span style={{background:"#F0FFF4",color:"#2F855A",width:28,height:28,borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,flexShrink:0}}>📈</span>
+        Déclarer une commission
+      </h3>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+        <div>
+          <label style={{display:"block",fontSize:11,fontWeight:700,color:"#4A5568",marginBottom:6,textTransform:"uppercase",letterSpacing:0.5}}>Montant (€) *</label>
+          <input type="number" min="0" step="0.01" value={form.montant}
+            onChange={e=>set("montant")(e.target.value)}
+            placeholder="0.00"
+            style={{width:"100%",padding:"9px 12px",borderRadius:10,border:`1.5px solid ${montantOk?"#68D391":"#E2E8F0"}`,fontSize:14,color:NAVY,outline:"none",boxSizing:"border-box",fontWeight:700}}/>
+        </div>
+        <Inp label="Date" type="date" value={form.date} min={minDate} max={maxDate}
+          onChange={e=>{const v=e.target.value;if(ym&&v&&(v<minDate||v>maxDate))return;set("date")(v);}}/>
+      </div>
+      <Inp label="Chantier / Client *" value={form.chantier} onChange={e=>set("chantier")(e.target.value)} placeholder="Ex: LM LEBON, Vente portail…"/>
+      <Inp label="Note complémentaire" value={form.note} onChange={e=>set("note")(e.target.value)} placeholder="Optionnel"/>
+      {montantOk&&form.chantier&&(
+        <div style={{background:"#F0FFF4",border:"1.5px solid #9AE6B4",borderRadius:12,padding:"0.75rem 1rem",marginBottom:12,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <span style={{color:"#2F855A",fontWeight:600,fontSize:14}}>📈 Commission à déclarer</span>
+          <span style={{fontWeight:800,fontSize:20,color:"#2F855A"}}>{Number(form.montant).toLocaleString("fr-FR",{minimumFractionDigits:2})} €</span>
+        </div>
+      )}
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+        <Btn variant="outline" onClick={onCancel}>Annuler</Btn>
+        <Btn onClick={()=>onSave({montant:Number(form.montant),chantier:sanitize(form.chantier,200),note:sanitize(form.note,200),date:form.date})} disabled={!montantOk||!form.chantier}>Enregistrer</Btn>
+      </div>
+    </Card>
+  );
+}
+
+
 function ForfaitForm({initial,onSave,onCancel,ym}){
   const minDate=ym?`${ym}-01`:"";
   const maxDate=ym?(()=>{const[y,m]=ym.split("-").map(Number);const last=new Date(y,m,0).getDate();return `${ym}-${String(last).padStart(2,"0")}`;})():"";
@@ -1195,6 +1235,13 @@ function EmpDash({employee,employees,onLogout,onEmpUpdate}){
   const[syncError,setSyncError]=useState(false); // D4 — alerte sync
   const[ym,setYm]=useState(getYM());
   const[mode,setMode]=useState(null);
+  const[commissions,setCommissions]=useState([]);
+  const commKey=`fp:commissions:${employee.id}:${ym}`;
+
+  // Chargement des commissions du mois
+  useEffect(()=>{
+    sg(commKey).then(d=>setCommissions((d||[]).filter(c=>!c.deleted))).catch(()=>{});
+  },[commKey]);
   const[editEntry,setEditEntry]=useState(null);
   const[filter,setFilter]=useState("all");
   const[showProfile,setShowProfile]=useState(false);
@@ -1206,94 +1253,134 @@ function EmpDash({employee,employees,onLogout,onEmpUpdate}){
     function getWeekNum(d){const dt=new Date(Date.UTC(d.getFullYear(),d.getMonth(),d.getDate()));const dn=dt.getUTCDay()||7;dt.setUTCDate(dt.getUTCDate()+4-dn);const y=new Date(Date.UTC(dt.getUTCFullYear(),0,1));return Math.ceil((((dt-y)/86400000)+1)/7);}
     function fmtWeek(mon){const[y,m,d]=mon.split("-");const mo=new Date(Number(y),Number(m)-1,Number(d));const su=new Date(mo);su.setDate(mo.getDate()+6);const p=n=>String(n).padStart(2,"0");return`S${getWeekNum(mo)} — ${p(mo.getDate())}/${p(mo.getMonth()+1)} au ${p(su.getDate())}/${p(su.getMonth()+1)}/${su.getFullYear()}`;}
     function fmtHL(h){const hh=Math.floor(Math.abs(h)),mm=Math.round((Math.abs(h)-hh)*60);return`${h<0?"-":""}${hh}h${String(mm).padStart(2,"0")}`;}
+    const isForfaitEmp=employee.contractType==="forfait";
 
-    Promise.all(monthsSinceStart().map(m=>sg(`fp:${employee.id}:${m}`).then(d=>({m,data:d||[]})))).then(results=>{
-      const all=results.flatMap(r=>r.data);
-      if(!all.length){alert("Aucune donnée à exporter.");return;}
+    // Charger horaires + commissions en parallèle
+    const months=monthsSinceStart();
+    Promise.all([
+      ...months.map(m=>sg(`fp:${employee.id}:${m}`).then(d=>({m,data:d||[]}))),
+      ...months.map(m=>sg(`fp:commissions:${employee.id}:${m}`).then(d=>({m,comms:d||[]})))
+    ]).then(results=>{
+      const horaireResults=results.slice(0,months.length);
+      const commResults=results.slice(months.length);
+      const all=horaireResults.flatMap(r=>r.data);
+      const allComms=commResults.flatMap(r=>r.comms).filter(c=>!c.deleted);
+      if(!all.length&&!allComms.length){alert("Aucune donnée à exporter.");return;}
 
-      const wm={};
-      all.forEach(e=>{
-        if(e.type==="absence"){
-          let c=new Date(e.dateStart);const en=new Date(e.dateEnd||e.dateStart);
-          while(c<=en){const ds=c.toISOString().slice(0,10);const mo=getMondayOf(ds);if(!wm[mo])wm[mo]={h:0,aj:0,ad:[]};wm[mo].aj+=e.halfDay==="half"?0.5:1;wm[mo].ad.push(at(e.absType).label);c.setDate(c.getDate()+1);}
-        } else {const mo=getMondayOf(e.date);if(!wm[mo])wm[mo]={h:0,aj:0,ad:[]};wm[mo].h+=calcH(e.startTime,e.endTime,e.breakMin);}
-      });
-      const mondays=Object.keys(wm).sort();
       const contratInfo=ct(employee.contractType);
 
-      const sheet1=[
-        [`MES HEURES — ${employee.name.toUpperCase()}`,"","","","","",""],
-        [`Contrat : ${contratInfo.label||"—"}   |   Entrée : ${employee.entryDate?fmtDate(employee.entryDate):"—"}   |   Base : 35h/semaine`],
-        [""],
-        ["Semaine","Heures travaillées","Jours absence","Type(s) absence","Heures requises (35h)","Différence","Statut"],
-      ];
-      let tH=0,tR=0,tD=0;
-      mondays.forEach(mo=>{
-        const w=wm[mo];const h=w.h;const aj=w.aj;
-        const req=Math.max(0,35-(aj*7));const diff=h-req;
-        tH+=h;tR+=req;tD+=diff;
-        sheet1.push([fmtWeek(mo),fmtHL(h),aj>0?`${aj}j`:"",[ ...new Set(w.ad)].join(", ")||"",fmtHL(req),fmtHL(diff),diff>0?"✓ Excédent":diff===0?"✓ Exact":"⚠ Déficit"]);
-      });
-      sheet1.push(["TOTAL GÉNÉRAL",fmtHL(tH),"","",fmtHL(tR),fmtHL(tD),tD>=0?"✓ Excédent":"⚠ Déficit"]);
+      // ── Onglet 1 : Synthèse hebdo OU synthèse forfait ────────────────────
+      let sheet1,ws1;
+      if(isForfaitEmp){
+        // Forfait jours : synthèse par mois des jours travaillés
+        sheet1=[
+          [`MES JOURS — ${employee.name.toUpperCase()}`,"","",""],
+          [`Contrat : ${contratInfo.label}   |   Entrée : ${employee.entryDate?fmtDate(employee.entryDate):"—"}`],
+          [""],
+          ["Mois","Jours travaillés","Jours absence","Paniers repas"],
+        ];
+        horaireResults.sort((a,b)=>a.m.localeCompare(b.m)).forEach(({m,data})=>{
+          const forfaitDays=data.filter(e=>!e.deleted&&e.type==="forfait").length;
+          const absDays=data.filter(e=>!e.deleted&&e.type==="absence").reduce((s,e)=>s+Number(e.nbDays||1),0);
+          if(forfaitDays===0&&absDays===0)return;
+          const absDates=new Set();
+          data.filter(e=>e.type==="absence").forEach(e=>{let c=new Date(e.dateStart);const en=new Date(e.dateEnd||e.dateStart);while(c<=en){absDates.add(c.toISOString().slice(0,10));c.setDate(c.getDate()+1);}});
+          const paniers=data.filter(e=>!e.deleted&&e.type==="forfait"&&e.date&&!absDates.has(e.date)).length;
+          sheet1.push([fmtYM(m),forfaitDays,absDays,paniers]);
+        });
+      } else {
+        // Heures classiques
+        const wm={};
+        all.forEach(e=>{
+          if(e.type==="absence"){let c=new Date(e.dateStart);const en=new Date(e.dateEnd||e.dateStart);while(c<=en){const ds=c.toISOString().slice(0,10);const mo=getMondayOf(ds);if(!wm[mo])wm[mo]={h:0,aj:0,ad:[]};wm[mo].aj+=e.halfDay==="half"?0.5:1;wm[mo].ad.push(at(e.absType).label);c.setDate(c.getDate()+1);}}
+          else if(e.type==="work"||!e.type){const mo=getMondayOf(e.date);if(!wm[mo])wm[mo]={h:0,aj:0,ad:[]};wm[mo].h+=calcH(e.startTime,e.endTime,e.breakMin);}
+        });
+        const mondays=Object.keys(wm).sort();
+        sheet1=[
+          [`MES HEURES — ${employee.name.toUpperCase()}`,"","","","","",""],
+          [`Contrat : ${contratInfo.label}   |   Entrée : ${employee.entryDate?fmtDate(employee.entryDate):"—"}   |   Base : 35h/semaine`],
+          [""],
+          ["Semaine","Heures travaillées","Jours absence","Type(s) absence","Heures requises (35h)","Différence","Statut"],
+        ];
+        let tH=0,tR=0,tD=0;
+        mondays.forEach(mo=>{const w=wm[mo];const h=w.h;const aj=w.aj;const req=Math.max(0,35-(aj*7));const diff=h-req;tH+=h;tR+=req;tD+=diff;sheet1.push([fmtWeek(mo),fmtHL(h),aj>0?`${aj}j`:"",[...new Set(w.ad)].join(", ")||"",fmtHL(req),fmtHL(diff),diff>0?"✓ Excédent":diff===0?"✓ Exact":"⚠ Déficit"]);});
+        sheet1.push(["TOTAL GÉNÉRAL",fmtHL(tH),"","",fmtHL(tR),fmtHL(tD),tD>=0?"✓ Excédent":"⚠ Déficit"]);
+      }
 
+      // ── Onglet 2 : Détail journalier ─────────────────────────────────────
       const sheet2=[
         [`DÉTAIL JOURNALIER — ${employee.name.toUpperCase()}`],
         [""],
-        ["Date","Jour","Type","Heure début","Heure fin","Pause (min)","Heures effectives","Chantier / Note","Type absence","Jours abs."],
+        ["Date","Jour","Type","Heure début","Heure fin","Pause (min)","Heures/Jours","Chantier / Note","Type absence","Jours abs."],
       ];
-      all.slice().sort((a,b)=>(a.date||a.dateStart).localeCompare(b.date||b.dateStart)).forEach(e=>{
+      all.filter(e=>!e.deleted).slice().sort((a,b)=>(a.date||a.dateStart).localeCompare(b.date||b.dateStart)).forEach(e=>{
         const isA=e.type==="absence";
+        const isF=e.type==="forfait";
         const ds=e.date||e.dateStart;const[y,m,d]=ds.split("-");
         const jour=DAYS_FR[new Date(Number(y),Number(m)-1,Number(d)).getDay()];
         if(isA){const typ=at(e.absType);const dr=e.dateEnd&&e.dateEnd!==e.dateStart?`${fmtDate(e.dateStart)} → ${fmtDate(e.dateEnd)}`:fmtDate(e.dateStart);sheet2.push([dr,jour,"Absence","","","","",e.note||"",typ.label,e.halfDay==="half"?"0.5":String(e.nbDays||1)]);}
+        else if(isF){sheet2.push([fmtDate(ds),jour,"Forfait jour","","","","1j",e.note||"","",""]);}
         else{sheet2.push([fmtDate(ds),jour,"Travail",e.startTime,e.endTime,e.breakMin||"0",fmtHL(calcH(e.startTime,e.endTime,e.breakMin)),e.note||"","",""]);}
       });
 
-      // F4 — Onglet Tickets & Paniers par mois (seuil >6h, sans absences)
+      // ── Onglet 3 : Paniers / Tickets ──────────────────────────────────────
       const mealT=employee.mealType||"ticket";
       const mealLabel=mealT==="panier"?"🧺 Panier repas":"🎟 Ticket restaurant";
       const sheet3=[
         [`TICKETS & PANIERS — ${employee.name.toUpperCase()}`,"","",""],
-        [`Type d'avantage : ${mealLabel}   |   Règle : journée > 6h effectives sans absence`,"","",""],
+        [`Type d'avantage : ${mealLabel}   |   Règle : ${isForfaitEmp?"chaque jour forfait":"journée > 6h"} sans absence`,"","",""],
         [""],
-        ["Mois","Jours éligibles (>6h)","Nb "+( mealT==="ticket"?"tickets":"paniers"),"Cumul"],
+        ["Mois","Jours éligibles","Nb "+(mealT==="ticket"?"tickets":"paniers"),"Cumul"],
       ];
       let cumul=0;
-      results.sort((a,b)=>a.m.localeCompare(b.m)).forEach(({m,data})=>{
+      horaireResults.sort((a,b)=>a.m.localeCompare(b.m)).forEach(({m,data})=>{
         if(!data.length)return;
-        // Dates d'absence du mois
         const absEntries=data.filter(e=>e.type==="absence");
         const absDates=new Set();
-        absEntries.forEach(e=>{
-          let cur=new Date(e.dateStart);const end=new Date(e.dateEnd||e.dateStart);
-          while(cur<=end){absDates.add(cur.toISOString().slice(0,10));cur.setDate(cur.getDate()+1);}
-        });
-        // Heures par date
-        const hoursByDate={};
-        data.filter(e=>e.type==="work"||!e.type).forEach(e=>{
-          if(!e.date)return;
-          if(!hoursByDate[e.date])hoursByDate[e.date]=0;
-          hoursByDate[e.date]+=calcH(e.startTime,e.endTime,e.breakMin);
-        });
-        const jours=Object.entries(hoursByDate).filter(([date,h])=>h>6&&!absDates.has(date)).length;
+        absEntries.forEach(e=>{let cur=new Date(e.dateStart);const end=new Date(e.dateEnd||e.dateStart);while(cur<=end){absDates.add(cur.toISOString().slice(0,10));cur.setDate(cur.getDate()+1);}});
+        let jours;
+        if(isForfaitEmp){
+          jours=data.filter(e=>!e.deleted&&e.type==="forfait"&&e.date&&!absDates.has(e.date)).length;
+        } else {
+          const hoursByDate={};
+          data.filter(e=>e.type==="work"||!e.type).forEach(e=>{if(!e.date)return;if(!hoursByDate[e.date])hoursByDate[e.date]=0;hoursByDate[e.date]+=calcH(e.startTime,e.endTime,e.breakMin);});
+          jours=Object.entries(hoursByDate).filter(([date,h])=>h>6&&!absDates.has(date)).length;
+        }
         if(jours===0)return;
-        cumul+=jours;
-        sheet3.push([fmtYM(m),jours,jours,cumul]);
+        cumul+=jours;sheet3.push([fmtYM(m),jours,jours,cumul]);
       });
       sheet3.push(["TOTAL",cumul,cumul,""]);
 
+      // ── Onglet 4 : Commissions (forfait uniquement) ───────────────────────
       const wb=XLSX.utils.book_new();
       const ws1=XLSX.utils.aoa_to_sheet(sheet1);
       const ws2=XLSX.utils.aoa_to_sheet(sheet2);
       const ws3=XLSX.utils.aoa_to_sheet(sheet3);
       ws1["!cols"]=[{wch:36},{wch:20},{wch:13},{wch:28},{wch:22},{wch:14},{wch:14}];
-      ws2["!cols"]=[{wch:30},{wch:8},{wch:10},{wch:12},{wch:12},{wch:12},{wch:18},{wch:26},{wch:22},{wch:12}];
+      ws2["!cols"]=[{wch:18},{wch:8},{wch:14},{wch:12},{wch:12},{wch:12},{wch:14},{wch:30},{wch:18},{wch:10}];
       ws3["!cols"]=[{wch:22},{wch:18},{wch:18},{wch:12}];
-      XLSX.utils.book_append_sheet(wb,ws1,"Synthèse hebdo");
+      XLSX.utils.book_append_sheet(wb,ws1,isForfaitEmp?"Synthèse jours":"Synthèse hebdo");
       XLSX.utils.book_append_sheet(wb,ws2,"Détail journalier");
       XLSX.utils.book_append_sheet(wb,ws3,"Tickets & Paniers");
-      XLSX.writeFile(wb,`mes_heures_${employee.name.replace(/ /g,"_")}.xlsx`);
-      adminLog("EXPORT_EMPLOYE",`${employee.name} — export personnel`);
+
+      if(isForfaitEmp&&allComms.length>0){
+        const sheet4=[
+          [`COMMISSIONS — ${employee.name.toUpperCase()}`,"","",""],
+          [""],
+          ["Date","Chantier / Client","Note","Montant (€)","Mois"],
+        ];
+        allComms.slice().sort((a,b)=>(a.date||"").localeCompare(b.date||"")).forEach(c=>{
+          sheet4.push([c.date||"",c.chantier||"",c.note||"",c.montant||0,c.ym||""]);
+        });
+        const totalComm=allComms.reduce((s,c)=>s+Number(c.montant||0),0);
+        sheet4.push(["","","TOTAL",totalComm,""]);
+        const ws4=XLSX.utils.aoa_to_sheet(sheet4);
+        ws4["!cols"]=[{wch:14},{wch:30},{wch:25},{wch:14},{wch:10}];
+        XLSX.utils.book_append_sheet(wb,ws4,"Commissions");
+      }
+
+      XLSX.writeFile(wb,`${isForfaitEmp?"mes_jours":"mes_heures"}_${employee.name.replace(/ /g,"_")}.xlsx`);
+      adminLog("EXPORT_EMPLOYE",`${employee.name} — export personnel${isForfaitEmp?" (forfait + commissions)":""}`);
     });
   }
 
@@ -1331,6 +1418,23 @@ function EmpDash({employee,employees,onLogout,onEmpUpdate}){
     });
   },[key]);
 
+  async function saveCommission(form){
+    const entry={id:uuid("com"),empId:employee.id,ym,...form,updatedAt:Date.now(),createdAt:Date.now()};
+    const next=[...commissions,entry];
+    await ss(commKey,next);
+    // Sync aussi dans fp:primes pour que l'admin voie les commissions
+    const primeKey=`fp:primes:${ym}`;
+    const existingPrimes=await sg(primeKey)||[];
+    await ss(primeKey,[...existingPrimes,{...entry,type:"commission",source:"auto"}]);
+    setCommissions(next);
+    setMode(null);
+  }
+  async function delCommission(id){
+    if(!window.confirm("Supprimer cette commission ?"))return;
+    const next=commissions.filter(c=>c.id!==id);
+    await ss(commKey,next);
+    setCommissions(next);
+  }
   async function save(form){
     setSaving(true);setSyncError(false);
     const entry={...form,id:editEntry?.id||uuid('e'),updatedAt:Date.now()};
@@ -1445,9 +1549,14 @@ function EmpDash({employee,employees,onLogout,onEmpUpdate}){
         </div>}
 
         {!mode&&!editEntry&&(
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:"1.25rem"}}>
-            <Btn onClick={()=>setMode("work")}>⏱ Heures</Btn>
-            <Btn onClick={()=>setMode("absence")} variant="green">📅 Absence</Btn>
+          <div style={{display:"grid",gridTemplateColumns:employee.contractType==="forfait"?"1fr 1fr 1fr":"1fr 1fr",gap:10,marginBottom:"1.25rem"}}>
+            {employee.contractType==="forfait"
+              ?<Btn onClick={()=>setMode("work")}>📅 Jour travaillé</Btn>
+              :<Btn onClick={()=>setMode("work")}>⏱ Heures</Btn>}
+            <Btn onClick={()=>setMode("absence")} variant="green">📋 Absence</Btn>
+            {employee.contractType==="forfait"&&(
+              <Btn onClick={()=>setMode("commission")} style={{background:"linear-gradient(135deg,#2F855A,#276749)"}}>📈 Commission</Btn>
+            )}
           </div>
         )}
 
@@ -1455,6 +1564,7 @@ function EmpDash({employee,employees,onLogout,onEmpUpdate}){
           ?<ForfaitForm ym={ym} onSave={save} onCancel={()=>setMode(null)}/>
           :<WorkForm ym={ym} onSave={save} onCancel={()=>setMode(null)}/>)}
         {mode==="absence"&&<AbsForm ym={ym} onSave={save} onCancel={()=>setMode(null)}/>}
+        {mode==="commission"&&<CommissionForm ym={ym} onSave={saveCommission} onCancel={()=>setMode(null)}/>}
         {editEntry&&(editEntry.type==="absence"
           ?<AbsForm ym={ym} initial={editEntry} onSave={save} onCancel={()=>setEditEntry(null)}/>
           :editEntry.type==="forfait"||employee.contractType==="forfait"
@@ -1525,9 +1635,35 @@ function EmpDash({employee,employees,onLogout,onEmpUpdate}){
                   <div>
                     <div style={{color:"rgba(255,255,255,0.6)",fontSize:11,fontWeight:700,letterSpacing:0.5}}>TOTAL {fmtYM(ym).toUpperCase()}</div>
                     {totalAbsDays>0&&<div style={{color:"rgba(255,255,255,0.45)",fontSize:11,marginTop:2}}>{totalAbsDays} j. absence</div>}
+                    {totalForfaitJours>0&&<div style={{color:"rgba(255,255,255,0.45)",fontSize:11,marginTop:2}}>{totalForfaitJours} jour{totalForfaitJours>1?"s":""} forfait</div>}
                   </div>
-                  <div style={{color:"#fff",fontWeight:800,fontSize:22}}>{fmtH(totalH)}</div>
+                  <div style={{color:"#fff",fontWeight:800,fontSize:22}}>{employee.contractType==="forfait"?`${work.length}j`:fmtH(totalH)}</div>
                 </div>
+              </div>
+            )}
+
+            {/* ── Section Commissions (forfait jours uniquement) ─────────── */}
+            {employee.contractType==="forfait"&&(
+              <div style={{marginTop:"1.5rem"}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"0.75rem"}}>
+                  <h3 style={{margin:0,color:"#2F855A",fontSize:14,fontWeight:800}}>📈 Mes commissions — {fmtYM(ym)}</h3>
+                  <span style={{fontWeight:800,fontSize:16,color:"#2F855A"}}>
+                    {commissions.reduce((s,c)=>s+c.montant,0).toLocaleString("fr-FR",{minimumFractionDigits:2})} €
+                  </span>
+                </div>
+                {commissions.length===0
+                  ?<div style={{background:"#F0FFF4",borderRadius:12,padding:"1rem",textAlign:"center",color:"#718096",fontSize:13}}>Aucune commission ce mois-ci</div>
+                  :commissions.map(c=>(
+                    <div key={c.id} style={{background:"#fff",borderRadius:14,padding:"0.85rem 1rem",marginBottom:8,boxShadow:"0 2px 8px rgba(0,0,0,0.05)",borderLeft:"4px solid #2F855A",display:"flex",alignItems:"center",gap:10}}>
+                      <span style={{fontSize:20,flexShrink:0}}>📈</span>
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{fontWeight:700,color:NAVY,fontSize:13}}>{c.chantier}</div>
+                        <div style={{fontSize:11,color:"#718096"}}>{c.date}{c.note?` — ${c.note}`:""}</div>
+                      </div>
+                      <div style={{fontWeight:800,fontSize:16,color:"#2F855A",whiteSpace:"nowrap"}}>{c.montant.toLocaleString("fr-FR",{minimumFractionDigits:2})} €</div>
+                      <button onClick={()=>delCommission(c.id)} style={{background:"#FFF5F5",border:"none",borderRadius:7,padding:"4px 9px",fontSize:12,color:"#C53030",cursor:"pointer"}}>🗑</button>
+                    </div>
+                  ))}
               </div>
             )}
           </>
