@@ -1270,7 +1270,7 @@ function EmpDash({employee,employees,onLogout,onEmpUpdate}){
       const contratInfo=ct(employee.contractType);
 
       // ── Onglet 1 : Synthèse hebdo OU synthèse forfait ────────────────────
-      let sheet1,ws1;
+      let sheet1,ws1,ws2,ws3;
       if(isForfaitEmp){
         // Forfait jours : synthèse par mois des jours travaillés
         sheet1=[
@@ -1353,9 +1353,9 @@ function EmpDash({employee,employees,onLogout,onEmpUpdate}){
 
       // ── Onglet 4 : Commissions (forfait uniquement) ───────────────────────
       const wb=XLSX.utils.book_new();
-      const ws1=XLSX.utils.aoa_to_sheet(sheet1);
-      const ws2=XLSX.utils.aoa_to_sheet(sheet2);
-      const ws3=XLSX.utils.aoa_to_sheet(sheet3);
+      ws1=XLSX.utils.aoa_to_sheet(sheet1);
+      ws2=XLSX.utils.aoa_to_sheet(sheet2);
+      ws3=XLSX.utils.aoa_to_sheet(sheet3);
       ws1["!cols"]=[{wch:36},{wch:20},{wch:13},{wch:28},{wch:22},{wch:14},{wch:14}];
       ws2["!cols"]=[{wch:18},{wch:8},{wch:14},{wch:12},{wch:12},{wch:12},{wch:14},{wch:30},{wch:18},{wch:10}];
       ws3["!cols"]=[{wch:22},{wch:18},{wch:18},{wch:12}];
