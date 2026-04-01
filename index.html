@@ -259,48 +259,44 @@ async function retryQueueFlush(){
 //   → propagation fiable des suppressions entre appareils
 // ════════════════════════════════════════════════════════════════════
 async function safeSave(key,newEntries,onSyncError){
-  lss(key,newEntries); // localStorage immédiat — toujours fiable
-  if(!GS_READY){retryQueueAdd(key,newEntries);return;}
+  lss(key,newEntries); // localStorage immédiat
+  if(!GS_READY){retryQueueAdd(key,newEntries);return false;}
   try{
-    // #1 — Lecture via POST (secret jamais dans l'URL)
-    const ctrl=new AbortController();
-    const tid=setTimeout(()=>ctrl.abort(),8000);
-    const r=await fetch(SCRIPT_URL,{
+    // Lire Sheets
+    const r1=await fetch(SCRIPT_URL,{
       method:"POST",headers:{"Content-Type":"text/plain"},
       body:JSON.stringify({secret:SECRET,action:"get",key}),
-      redirect:"follow",signal:ctrl.signal
+      redirect:"follow"
     });
-    clearTimeout(tid);
-    const j=await r.json();
+    const j=await r1.json();
     const remote=(j.ok&&Array.isArray(j.data))?j.data:[];
 
-    // ── Sheets = source de vérité pour les entrées existantes ────
-    // Local gagne UNIQUEMENT pour les nouvelles entrées (absentes de Sheets)
-    // et pour les modifications très récentes (< 30s)
+    // Merge : local gagne sur les entrées modifiées récemment (< 60s)
+    // Sheets gagne sur tout le reste (source de vérité)
     const remoteMap=new Map(remote.map(e=>[e.id,e]));
     const localMap=new Map(newEntries.map(e=>[e.id,e]));
     const allIds=new Set([...remoteMap.keys(),...localMap.keys()]);
-    const now30s=Date.now()-30000; // 30 secondes
+    const now60s=Date.now()-60000;
 
     const merged=[];
     allIds.forEach(id=>{
       const loc=localMap.get(id);
       const rem=remoteMap.get(id);
       if(loc&&rem){
-        // Les deux existent :
-        // - Si modification locale très récente (< 30s) → local gagne (vient d'être saisie)
-        // - Sinon → Sheets gagne (source de vérité)
         const locTs=loc.updatedAt||0;
-        const remTs=rem.updatedAt||0;
-        if(locTs>now30s&&locTs>remTs) merged.push(loc); // saisie fraîche
-        else merged.push(rem); // Sheets fait foi
-      } else {
-        merged.push(loc||rem); // n'existe que d'un côté → on garde
+        // Local gagne si : modif fraîche (< 60s) OU tombstone (suppression)
+        if((locTs>now60s)||loc.deleted) merged.push(loc);
+        else merged.push(rem);
+      } else if(loc){
+        merged.push(loc); // nouvelle entrée locale
+      } else if(rem&&!localMap.has(rem.id)){
+        // Entrée Sheets absente du local → la conserver SAUF si elle a été supprimée localement
+        // On vérifie que ce n'est pas une entrée qu'on vient de supprimer
+        const wasDeleted=newEntries.find(e=>e.id===rem.id&&e.deleted);
+        if(!wasDeleted) merged.push(rem);
       }
     });
 
-    // Trier, exclure les tombstones (deleted:true) de l'affichage
-    // mais les garder en base pour propager les suppressions (TTL 7j)
     const now=Date.now();
     const TTL_DELETED=7*86400000;
     const final=merged
@@ -309,22 +305,28 @@ async function safeSave(key,newEntries,onSyncError){
 
     lss(key,final);
 
-    fetch(SCRIPT_URL,{
+    // Écriture vers Sheets — awaitable pour confirmer
+    const r2=await fetch(SCRIPT_URL,{
       method:"POST",headers:{"Content-Type":"text/plain"},
       body:JSON.stringify({secret:SECRET,action:"set",key,value:final}),redirect:"follow"
-    }).catch(e=>{
-      console.warn("safeSave write error",e);
-      retryQueueAdd(key,final); // R4 — mise en queue si échec
-      if(onSyncError)onSyncError();
     });
+    const j2=await r2.json();
+    if(!j2.ok){
+      retryQueueAdd(key,final);
+      if(onSyncError)onSyncError();
+      return false;
+    }
+    return true;
   }catch(e){
-    console.warn("safeSave merge error, fallback",e);
-    retryQueueAdd(key,newEntries); // R4
+    console.warn("safeSave error",e);
+    retryQueueAdd(key,newEntries);
     if(onSyncError)onSyncError();
+    // Fallback : écriture directe sans merge
     fetch(SCRIPT_URL,{
       method:"POST",headers:{"Content-Type":"text/plain"},
       body:JSON.stringify({secret:SECRET,action:"set",key,value:newEntries}),redirect:"follow"
     }).catch(()=>{});
+    return false;
   }
 }
 
@@ -917,17 +919,30 @@ function EmpLogin({employees,onLogin,onBack,onEmpUpdate}){
 }
 
 // ── FORM HEURES ───────────────────────────────────────────────────────────────
-function WorkForm({initial,onSave,onCancel}){
-  const[form,setForm]=useState({date:today(),startTime:"08:00",endTime:"17:00",breakMin:"60",note:"",...initial});
+function WorkForm({initial,onSave,onCancel,ym}){
+  // Calculer min/max du mois sélectionné pour bloquer les dates hors-mois
+  const minDate=ym?`${ym}-01`:"";
+  const maxDate=ym?(()=>{const[y,m]=ym.split("-").map(Number);const last=new Date(y,m,0).getDate();return `${ym}-${String(last).padStart(2,"0")}`;})():"";
+  const[form,setForm]=useState({date:minDate||today(),startTime:"08:00",endTime:"17:00",breakMin:"60",note:"",...initial});
   const h=calcH(form.startTime,form.endTime,form.breakMin);
   const set=k=>v=>setForm(f=>({...f,[k]:v}));
+  // Validation : la date doit appartenir au mois sélectionné
+  const dateOk=!ym||(!form.date?false:form.date>=minDate&&form.date<=maxDate);
   return(
     <Card style={{marginBottom:"1rem",border:`2px solid ${MAG}30`}}>
       <h3 style={{fontSize:15,fontWeight:800,color:NAVY,margin:"0 0 1.25rem",display:"flex",alignItems:"center",gap:8}}>
         <span style={{background:`${MAG}15`,color:MAG,width:28,height:28,borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,flexShrink:0}}>{initial?"✏":"⏱"}</span>
         {initial?"Modifier les heures":"Saisir mes heures"}
       </h3>
-      <Inp label="Date" type="date" value={form.date} onChange={e=>set("date")(e.target.value)}/>
+      <Inp label="Date" type="date" value={form.date}
+        min={minDate} max={maxDate}
+        onChange={e=>{
+          const v=e.target.value;
+          // Bloquer silencieusement si hors mois
+          if(ym&&v&&(v<minDate||v>maxDate))return;
+          set("date")(v);
+        }}/>
+      {!dateOk&&form.date&&<div style={{background:"#FFF5F5",border:"1.5px solid #FC8181",borderRadius:8,padding:"6px 10px",fontSize:12,color:"#C53030",fontWeight:700,marginBottom:8}}>⚠️ La date doit être en {ym?fmtYM(ym):""}</div>}
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
         <Inp label="Heure début" type="time" value={form.startTime} onChange={e=>set("startTime")(e.target.value)}/>
         <Inp label="Heure fin" type="time" value={form.endTime} onChange={e=>set("endTime")(e.target.value)}/>
@@ -937,19 +952,27 @@ function WorkForm({initial,onSave,onCancel}){
       {h>0&&<div style={{background:`linear-gradient(135deg,${NAVY}10,${MAG}10)`,borderRadius:12,padding:"0.85rem 1rem",marginBottom:16,display:"flex",justifyContent:"space-between",alignItems:"center",border:`1px solid ${MAG}20`}}><span style={{color:"#4A5568",fontSize:14,fontWeight:600}}>⏱ Temps effectif</span><span style={{color:MAG,fontWeight:800,fontSize:20}}>{fmtH(h)}</span></div>}
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
         <Btn variant="outline" onClick={onCancel}>Annuler</Btn>
-        <Btn onClick={()=>onSave({...form,type:"work",note:sanitize(form.note,200)})} disabled={!form.date||h<=0}>Enregistrer</Btn>
+        <Btn onClick={()=>onSave({...form,type:"work",note:sanitize(form.note,200)})} disabled={!form.date||h<=0||!dateOk}>Enregistrer</Btn>
       </div>
     </Card>
   );
 }
 
 // ── FORM ABSENCE ──────────────────────────────────────────────────────────────
-function AbsForm({initial,onSave,onCancel}){
-  const def={absType:"cp",dateStart:today(),dateEnd:today(),halfDay:"full",note:""};
+function AbsForm({initial,onSave,onCancel,ym}){
+  const minDate=ym?`${ym}-01`:"";
+  const maxDate=ym?(()=>{const[y,m]=ym.split("-").map(Number);const last=new Date(y,m,0).getDate();return `${ym}-${String(last).padStart(2,"0")}`;})():"";
+  const def={absType:"cp",dateStart:minDate||today(),dateEnd:minDate||today(),halfDay:"full",note:""};
   const[form,setForm]=useState({...def,...(initial&&initial.absType?initial:{})});
   const set=k=>v=>setForm(f=>({...f,[k]:v}));
   const typ=at(form.absType);
-  // F2 — calcul nbDays excluant weekends et jours fériés (sauf maladie = tous les jours)
+  // Validation date dans le mois
+  const dateOk=!ym||(!form.dateStart?false:form.dateStart>=minDate&&form.dateStart<=maxDate);
+  const dateEndOk=!ym||(!form.dateEnd?true:form.dateEnd>=minDate&&form.dateEnd<=maxDate);
+  const handleDate=k=>v=>{
+    if(ym&&v&&(v<minDate||v>maxDate))return; // bloquer hors-mois
+    set(k)(v);
+  };
   const nb=(()=>{
     if(form.halfDay==="half")return 0.5;
     const excludeWE=form.absType!=="mal"&&form.absType!=="accd";
@@ -991,12 +1014,13 @@ function AbsForm({initial,onSave,onCancel}){
         </div>
       </div>
       {form.halfDay==="half"
-        ?<Inp label="Date" type="date" value={form.dateStart} onChange={e=>set("dateStart")(e.target.value)}/>
+        ?<Inp label="Date" type="date" value={form.dateStart} min={minDate} max={maxDate} onChange={e=>handleDate("dateStart")(e.target.value)}/>
         :<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
-          <Inp label="Date début" type="date" value={form.dateStart} onChange={e=>set("dateStart")(e.target.value)}/>
-          <Inp label="Date fin" type="date" value={form.dateEnd||form.dateStart} onChange={e=>set("dateEnd")(e.target.value)}/>
+          <Inp label="Date début" type="date" value={form.dateStart} min={minDate} max={maxDate} onChange={e=>handleDate("dateStart")(e.target.value)}/>
+          <Inp label="Date fin" type="date" value={form.dateEnd||form.dateStart} min={minDate} max={maxDate} onChange={e=>handleDate("dateEnd")(e.target.value)}/>
          </div>
       }
+      {(!dateOk||!dateEndOk)&&<div style={{background:"#FFF5F5",border:"1.5px solid #FC8181",borderRadius:8,padding:"6px 10px",fontSize:12,color:"#C53030",fontWeight:700,marginBottom:8}}>⚠️ La date doit être en {ym?fmtYM(ym):""}</div>}
       <Inp label="Commentaire (optionnel)" value={form.note} onChange={e=>set("note")(e.target.value)} placeholder="Médecin, destination, motif…"/>
       <div style={{background:typ.bg,border:`1.5px solid ${typ.color}30`,borderRadius:12,padding:"0.85rem 1rem",marginBottom:8,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
         <div style={{display:"flex",alignItems:"center",gap:8}}><span style={{fontSize:20}}>{typ.icon}</span><span style={{color:typ.color,fontWeight:700,fontSize:14}}>{typ.label}</span></div>
@@ -1005,7 +1029,7 @@ function AbsForm({initial,onSave,onCancel}){
       {form.halfDay!=="half"&&form.absType!=="mal"&&form.absType!=="accd"&&<div style={{background:"#EBF8FF",borderRadius:8,padding:"5px 10px",fontSize:11,color:"#2B6CB0",fontWeight:600,marginBottom:12}}>ℹ️ Week-ends et jours fériés exclus automatiquement</div>}
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
         <Btn variant="outline" onClick={onCancel}>Annuler</Btn>
-        <Btn onClick={()=>onSave({...form,type:"absence",nbDays:nb,note:sanitize(form.note,200)})} disabled={!form.dateStart}>Enregistrer</Btn>
+        <Btn onClick={()=>onSave({...form,type:"absence",nbDays:nb,note:sanitize(form.note,200)})} disabled={!form.dateStart||!dateOk||!dateEndOk}>Enregistrer</Btn>
       </div>
     </Card>
   );
@@ -1292,15 +1316,16 @@ function EmpDash({employee,employees,onLogout,onEmpUpdate}){
   }
   async function del(id){
     setSyncError(false);
-    // R3 — Tombstone : marquer deleted plutôt que supprimer
-    // La suppression sera propagée à tous les appareils via le merge timestamp
+    const now=Date.now();
+    // Tombstone : updatedAt = maintenant → local gagne sur Sheets (fenêtre 60s)
     const next=entries.map(e=>e.id===id
-      ?{...e,deleted:true,deletedAt:Date.now(),updatedAt:Date.now()}
+      ?{...e,deleted:true,deletedAt:now,updatedAt:now}
       :e);
-    // Afficher sans les tombstones (filtrés côté UI)
-    const visible=next.filter(e=>!e.deleted);
-    setEntries(visible);
-    await safeSave(key,next,()=>setSyncError(true));
+    // Afficher sans les tombstones
+    setEntries(next.filter(e=>!e.deleted));
+    // Envoyer la liste complète avec tombstone → Sheets sera mis à jour
+    const ok=await safeSave(key,next,()=>setSyncError(true));
+    if(!ok) setSyncError(true);
   }
 
   const work=entries.filter(e=>e.type==="work"||!e.type);
@@ -1396,9 +1421,9 @@ function EmpDash({employee,employees,onLogout,onEmpUpdate}){
           </div>
         )}
 
-        {mode==="work"&&<WorkForm onSave={save} onCancel={()=>setMode(null)}/>}
-        {mode==="absence"&&<AbsForm onSave={save} onCancel={()=>setMode(null)}/>}
-        {editEntry&&(editEntry.type==="absence"?<AbsForm initial={editEntry} onSave={save} onCancel={()=>setEditEntry(null)}/>:<WorkForm initial={editEntry} onSave={save} onCancel={()=>setEditEntry(null)}/>)}
+        {mode==="work"&&<WorkForm ym={ym} onSave={save} onCancel={()=>setMode(null)}/>}
+        {mode==="absence"&&<AbsForm ym={ym} onSave={save} onCancel={()=>setMode(null)}/>}
+        {editEntry&&(editEntry.type==="absence"?<AbsForm ym={ym} initial={editEntry} onSave={save} onCancel={()=>setEditEntry(null)}/>:<WorkForm ym={ym} initial={editEntry} onSave={save} onCancel={()=>setEditEntry(null)}/>)}
 
         {loading?<Spinner/>:(
           <>
