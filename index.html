@@ -1927,6 +1927,8 @@ function AdminDash({employees:initEmp,onLogout,onEmpChange}){
   const[loading,setLoading]=useState(false);
   const[detailId,setDetailId]=useState(null);
   const[detailTab,setDetailTab]=useState("all");
+  const[refreshTick,setRefreshTick]=useState(0);
+  const[lastRefresh,setLastRefresh]=useState(null);
   const months=monthsSinceStart();
 
   function handleUpdate(next){setEmployees(next);onEmpChange(next);}
@@ -1951,12 +1953,12 @@ function AdminDash({employees:initEmp,onLogout,onEmpChange}){
   useEffect(()=>{
     if(tab!=="heures")return;
     setLoading(true);setDetailId(null);
-    Promise.all(employees.map(emp=>sg(`fp:${emp.id}:${ym}`).then(d=>({id:emp.id,data:d||[]}))))
-      .then(res=>{const map={};res.forEach(r=>{map[r.id]=r.data;});setAllData(map);setLoading(false);});
-  },[ym,tab,employees]);
+    Promise.all(employees.map(emp=>sg(`fp:${emp.id}:${ym}`).then(d=>({id:emp.id,data:(d||[]).filter(e=>!e.deleted)}))))
+      .then(res=>{const map={};res.forEach(r=>{map[r.id]=r.data;});setAllData(map);setLoading(false);setLastRefresh(new Date());});
+  },[ym,tab,employees,refreshTick]);
 
-  function eWork(id){return(allData[id]||[]).filter(e=>e.type==="work"||!e.type);}
-  function eAbs(id){return(allData[id]||[]).filter(e=>e.type==="absence");}
+  function eWork(id){return(allData[id]||[]).filter(e=>!e.deleted&&(e.type==="work"||!e.type));}
+  function eAbs(id){return(allData[id]||[]).filter(e=>!e.deleted&&e.type==="absence");}
   function eTotH(id){return eWork(id).reduce((s,e)=>s+calcH(e.startTime,e.endTime,e.breakMin),0);}
   function eTotAbs(id){return eAbs(id).reduce((s,e)=>s+Number(e.nbDays||1),0);}
   // Calcul corrigé — seuil >6h effectives + exclusion jours d'absence
@@ -2380,6 +2382,10 @@ function AdminDash({employees:initEmp,onLogout,onEmpChange}){
             <div style={{display:"flex",gap:10,marginBottom:"1.5rem",flexWrap:"wrap",alignItems:"center"}}>
               <select value={ym} onChange={e=>setYm(e.target.value)} style={{padding:"9px 14px",borderRadius:10,border:"1.5px solid #E2E8F0",fontSize:14,fontWeight:700,color:NAVY,background:"#fff",cursor:"pointer",outline:"none"}}>{months.map(m=><option key={m} value={m}>{fmtYM(m)}</option>)}</select>
               <button onClick={exportCSV} style={{background:NAVY,color:"#fff",border:"none",borderRadius:10,padding:"9px 18px",fontSize:13,fontWeight:700,cursor:"pointer",display:"flex",alignItems:"center",gap:8}}>📥 Exporter Excel</button>
+              <button onClick={()=>setRefreshTick(t=>t+1)} disabled={loading} style={{background:"#EBF8FF",color:"#2B6CB0",border:"1.5px solid #BEE3F8",borderRadius:10,padding:"9px 14px",fontSize:13,fontWeight:700,cursor:loading?"wait":"pointer",display:"flex",alignItems:"center",gap:6}}>
+                {loading?"⟳ Chargement…":"🔄 Actualiser"}
+              </button>
+              {lastRefresh&&<span style={{fontSize:11,color:"#A0AEC0",fontWeight:600,display:"flex",alignItems:"center"}}>Màj {lastRefresh.toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"})}</span>}
               {detailId&&<button onClick={()=>{setDetailId(null);setDetailTab("all");}} style={{background:`${MAG}12`,color:MAG,border:`1.5px solid ${MAG}30`,borderRadius:10,padding:"9px 14px",fontSize:13,fontWeight:700,cursor:"pointer"}}>← Retour</button>}
             </div>
             <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginBottom:"1rem"}}>
